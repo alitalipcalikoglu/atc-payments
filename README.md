@@ -93,6 +93,10 @@ test/                         node:test suites and the fake Stripe
 - Reversal of a refund that Stripe reports as failed after it succeeded.
 - Multi-currency conversion; amounts are kept in the currency they were charged in.
 
+## Operational events
+
+Besides the outbox (`payment.*`, `refund.*`), the service publishes `ops.payments.outbox_dead` when an outbox event used up its attempts (best effort, through an in-memory publisher; `payments_outbox_pending{state="dead"}` is the durable signal). See [examples/events.md](examples/events.md).
+
 ## Audit events
 
 With `AUDIT_URL` and `AUDIT_API_KEY` set: `atc-payments.payment.create`, `.payment.cancel`, `.payment.sync`, `.refund.create` from the API (`success`, or `denied` on 403); `atc-payments.payment.<status>` and `atc-payments.refund.<status>` with the actor `provider:stripe` when a webhook changes something; `atc-payments.webhook.rejected` (`denied`) for bad signatures. Unlike most services, forwarding is durable: each event is written to the `audit_outbox` table first and delivered by the audit client with retries, so a crash or an audit-service outage does not lose money events (`audit_forward_pending` shows the backlog). Details: [examples/audit-events.md](examples/audit-events.md).

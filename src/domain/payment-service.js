@@ -29,11 +29,13 @@ export class PaymentService {
    * @param {import('../store/payment-store.js').PaymentStore} deps.store
    * @param {import('../net/stripe-client.js').StripeClient|null} deps.stripe
    * @param {import('../audit/durable-audit.js').AuditSink} [deps.audit]
+   * @param {{ publish: (type: string, data?: unknown) => boolean }} [deps.ops]  Operational events (best effort, unlike the outbox).
    * @param {() => number} [deps.now]
    * @param {import('../types.js').Logger} [deps.logger]
    */
-  constructor({ config, store, stripe, audit, now = Date.now, logger }) {
+  constructor({ config, store, stripe, audit, ops, now = Date.now, logger }) {
     this.config = config;
+    this.ops = ops ?? { publish: () => false };
     this.store = store;
     this.stripe = stripe;
     this.audit = audit;
@@ -207,7 +209,9 @@ export class PaymentService {
         sent++;
       } catch (err) {
         const backoff = Math.min(600_000, 1_000 * 2 ** e.attempts);
-        this.store.outboxFailed(e.seq, this.now() + backoff, err instanceof Error ? err.message : String(err));
+        const error = err instanceof Error ? err.message : String(err);
+        this.store.outboxFailed(e.seq, this.now() + backoff, error);
+        if (e.attempts + 1 >= this.config.limits.outboxMaxAttempts) this.ops.publish('ops.payments.outbox_dead', { source: 'atc-payments', seq: e.seq, type: e.type, attempts: e.attempts + 1, error: error.slice(0, 300) });
       }
     }
     return sent;

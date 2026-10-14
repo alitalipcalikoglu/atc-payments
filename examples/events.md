@@ -17,3 +17,11 @@ With `WEBHOOK_OUT_URL` and `WEBHOOK_OUT_API_KEY` (a `publish` key), every change
 Events are written to an outbox in the same transaction as the change and delivered every `OUTBOX_MS` (2 s), in order, with exponential backoff on failure (1 s doubling, at most 10 min) up to `OUTBOX_MAX_ATTEMPTS`. The idempotency key makes a repeated delivery a no-op in atc-webhook-out. `/v1/stats` shows `outbox.pending` and `outbox.dead`.
 
 Without atc-webhook-out configured, nothing is queued.
+
+## Operational event
+
+| Event | When | Data |
+|---|---|---|
+| `ops.payments.outbox_dead` | An outbox event failed its last attempt (`OUTBOX_MAX_ATTEMPTS`) and will not be retried | `source`, `seq`, `type`, `attempts`, `error` |
+
+The outbox itself is durable; this alert is not: it goes through an in-memory publisher that may itself fail when atc-webhook-out is the thing that is down. The durable signal is `payments_outbox_pending{state="dead"}` on `/metrics` and `outbox.dead` in `/v1/stats`; alert on those too. A dead event stays in the table (until retention) and is not retried automatically.

@@ -4,6 +4,7 @@ import { readServiceVersion } from '@atc-web/atc-service-core/fastify';
 import { Config } from './config.js';
 import { DurableAudit } from './audit/durable-audit.js';
 import { Database } from './db.js';
+import { EventPublisher } from './events/event-publisher.js';
 import { PaymentService } from './domain/payment-service.js';
 import { PaymentsApi } from './http/payments-api.js';
 import { StripeClient } from './net/stripe-client.js';
@@ -23,8 +24,9 @@ export class Application {
     // Money events must not be lost to a crash: outbox table first, network later.
     this.audit = new DurableAudit({ AuditClient, target: config.audit, store: this.store, retentionDays: config.limits.eventRetentionDays });
     const { stripe } = config;
+    this.ops = new EventPublisher({ source: 'atc-payments', target: config.webhookOut });
     this.service = new PaymentService({
-      config, store: this.store, audit: this.audit,
+      config, store: this.store, audit: this.audit, ops: this.ops,
       stripe: stripe.secretKey ? new StripeClient({ secretKey: stripe.secretKey, apiUrl: stripe.apiUrl, timeoutMs: stripe.timeoutMs }) : null,
     });
     this.publisher = config.webhookOut ? new WebhookPublisher(config.webhookOut) : null;
@@ -53,7 +55,7 @@ export class Application {
 
   async start() {
     const { config } = this;
-    const app = await new PaymentsApi({ config, audit: this.audit, service: this.service, db: this.db, version: this.version }).build();
+    const app = await new PaymentsApi({ config, audit: this.audit, ops: this.ops, service: this.service, db: this.db, version: this.version }).build();
     this.app = app;
     this.service.logger = app.log;
     const stale = this.store.idemClearStale();
@@ -78,12 +80,14 @@ export class Application {
         () => { for (const t of this.timers) clearInterval(t); },
         () => this.app?.close(),
         () => this.publishing,
+        () => this.ops.close(),
         () => this.audit.close(),
         () => this.db.close(),
       ],
     });
     this.shutdown = shutdown;
     this.audit.logger = app.log;
+    this.ops.logger = app.log;
     this.audit.start();
     await app.listen({ port: config.port, host: config.host });
     app.log.info({ tls: config.tls !== null, provider: this.service.enabled ? 'stripe' : 'disabled', webhooks: config.stripe.webhookSecret !== null, webhookOut: this.publisher !== null }, config.tls ? 'serving HTTPS' : 'serving plain HTTP, terminate TLS at a reverse proxy');

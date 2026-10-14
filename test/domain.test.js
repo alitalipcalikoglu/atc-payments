@@ -158,3 +158,20 @@ test('outbox: delivered with stable idempotency keys, retried with backoff; rete
   assert.deepEqual(t.service.maintain(), { idempotency: 1, events: 0, outbox: 1 });
   assert.equal(StripeSignature.verify(undefined, '', 'x', { nowSec: 0, toleranceSec: 1 }).ok, false);
 });
+
+test('outbox: the last failed attempt publishes ops.payments.outbox_dead once', async () => {
+  const clock = manualClock();
+  /** @type {any[]} */ const ops = [];
+  const t = testService(fake, { OUTBOX_MAX_ATTEMPTS: '2', ...WH }, { now: clock.now, ops: { publish: (/** @type {string} */ ty, /** @type {any} */ d) => ops.push([ty, d]) } });
+  await create(t, 'outbox-dead-1');
+  const publisher = /** @type {any} */ ({ publish: async () => { throw new Error('atc-webhook-out responded 503'); } });
+  await t.service.publishDue(publisher);
+  assert.deepEqual(ops, []);
+  clock.advance(5_000);
+  await t.service.publishDue(publisher);
+  assert.deepEqual(ops.map((/** @type {[string, any]} */ [ty, d]) => [ty, d.type, d.attempts, d.error]), [['ops.payments.outbox_dead', 'payment.created', 2, 'atc-webhook-out responded 503']]);
+  clock.advance(900_000);
+  await t.service.publishDue(publisher);
+  assert.equal(ops.length, 1, 'a dead event is not retried and not announced again');
+  assert.deepEqual(t.service.stats().outbox, { pending: 0, dead: 1 });
+});

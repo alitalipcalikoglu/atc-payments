@@ -31,10 +31,12 @@ export class PaymentsApi {
    * @param {string} deps.version
    * @param {import('../types.js').Logger} [deps.logger]
    * @param {import('../audit/durable-audit.js').AuditSink} [deps.audit]
+   * @param {import('../events/event-publisher.js').EventPublisher} [deps.ops]
    */
-  constructor({ config, audit, service, db, version, logger }) {
+  constructor({ config, audit, ops, service, db, version, logger }) {
     this.config = config;
     this.audit = audit;
+    this.ops = ops ?? null;
     this.service = service;
     this.db = db;
     this.version = version;
@@ -187,6 +189,7 @@ export class PaymentsApi {
         '# TYPE payments_provider_enabled gauge',
         `payments_provider_enabled ${st.provider === 'stripe' ? 1 : 0}`,
         ...AuditMetrics.lines(this.audit),
+        ...(this.ops?.metricLines() ?? []),
         '# HELP payments_process_uptime_seconds Process uptime.',
         '# TYPE payments_process_uptime_seconds gauge',
         `payments_process_uptime_seconds ${process.uptime().toFixed(0)}`,

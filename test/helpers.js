@@ -23,14 +23,14 @@ export function manualClock(start = Date.now()) {
 
 /**
  * Service wired to a running fake Stripe (provider and webhooks enabled), unless `fake` is null.
- * @param {FakeStripe|null} fake @param {Record<string, string>} [overrides] @param {{ now?: () => number, audit?: any }} [o]
+ * @param {FakeStripe|null} fake @param {Record<string, string>} [overrides] @param {{ now?: () => number, audit?: any, ops?: any }} [o]
  */
 export function testService(fake, overrides = {}, o = {}) {
   const config = Config.fromEnv(testEnv(fake ? { STRIPE_SECRET_KEY: FakeStripe.SECRET_KEY, STRIPE_WEBHOOK_SECRET: FakeStripe.WEBHOOK_SECRET, STRIPE_API_URL: fake.url, ...overrides } : overrides));
   const db = new Database(':memory:');
   const store = new PaymentStore(db);
   const stripe = config.stripe.secretKey ? new StripeClient({ secretKey: config.stripe.secretKey, apiUrl: config.stripe.apiUrl, timeoutMs: config.stripe.timeoutMs }) : null;
-  const service = new PaymentService({ config, store, stripe, audit: o.audit, now: o.now });
+  const service = new PaymentService({ config, store, stripe, audit: o.audit, ops: o.ops, now: o.now });
   return { config, db, store, service };
 }
 
