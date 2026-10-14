@@ -7,7 +7,8 @@ import { StripeSignature } from '../src/net/stripe-signature.js';
  * retrieve, cancel), refunds, idempotency keys, bearer auth, Stripe-shaped errors, and signed
  * webhook events. Tests never talk to the real Stripe and never need real keys.
  *
- * Standalone (manual checks): `node test/fake-stripe.js 12111` prints the key and signing secret.
+ * Standalone (manual checks): `node test/fake-stripe.js 12111` prints the key and signing secret;
+ * `POST /_fake/payment_intents/<id>` with `status=succeeded` moves an intent and answers the event.
  */
 export class FakeStripe {
   static SECRET_KEY = `sk_test_${'f'.repeat(24)}`;
@@ -70,6 +71,13 @@ export class FakeStripe {
       const key = /** @type {string|undefined} */ (req.headers['idempotency-key']) ?? null;
       this.requests.push({ method: String(req.method), path, idempotencyKey: key, params });
       if (req.headers.authorization !== `Bearer ${FakeStripe.SECRET_KEY}`) return fail(401, 'invalid_request_error', 'Invalid API Key provided');
+      // Manual checks only: move an intent the way a customer's browser would (`status=succeeded`).
+      const manual = /^\/_fake\/payment_intents\/([^/]+)$/.exec(path);
+      if (manual && req.method === 'POST') {
+        const pi = this.intents.get(manual[1]);
+        if (!pi) return fail(404, 'invalid_request_error', 'no such intent');
+        return send(200, JSON.parse(this.transition(pi.id, params.status, { error: params.error }).body));
+      }
       if (this.failNext.count > 0) { this.failNext.count--; return fail(this.failNext.status, 'api_error', 'Something went wrong on our end'); }
       const replay = key ? this.idempotency.get(`${req.method} ${path} ${key}`) : undefined;
       if (replay) return send(replay.status, replay.body);

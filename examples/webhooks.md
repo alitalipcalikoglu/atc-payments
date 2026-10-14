@@ -5,10 +5,10 @@ Point a Stripe webhook endpoint at the gateway route and select at least `paymen
 Gateway (`routes.json`), so Stripe can reach it without an API key:
 
 ```json
-{ "id": "payments-webhooks", "pathPrefix": "/api/payments/webhooks/", "stripPrefix": "/api/payments", "upstreams": ["http://127.0.0.1:3019"], "methods": ["POST"], "bodyLimit": 262144, "rateLimit": 600 }
+{ "id": "payments-webhooks", "pathPrefix": "/api/payments/v1/webhooks/", "stripPrefix": "/api/payments", "upstreams": ["http://127.0.0.1:3019"], "methods": ["POST"], "bodyLimit": 262144, "rateLimit": 600 }
 ```
 
-Stripe URL: `https://api.example.com/api/payments/webhooks/stripe`.
+Stripe URL: `https://api.example.com/api/payments/v1/webhooks/stripe`.
 
 Each delivery is checked: `Stripe-Signature: t=…,v1=…` must be an HMAC-SHA256 of `<t>.<raw body>` with the signing secret (constant-time compare; several `v1` values are accepted during secret rotation) and `t` within `WEBHOOK_TOLERANCE_SEC` (300 s). Failures answer `400 INVALID_SIGNATURE` and are audited as `atc-payments.webhook.rejected` (denied).
 
