@@ -32,9 +32,11 @@ Tests and type check: `npm test`, `npm run typecheck`. Tests use a local fake St
 | POST | `/v1/webhooks/stripe` | Stripe signature | Webhook endpoint |
 | GET | `/metrics` | read | Prometheus text |
 | POST | `/v1/payments` | write | Create (`Idempotency-Key`); returns `clientSecret` |
-| GET | `/v1/payments`, `/v1/payments/:id` | read | List by status; detail with refunds, ledger, refundable amount |
+| GET | `/v1/payments`, `/v1/payments/:id` | read | List by status, e-mail, metadata, currency, amount range, creation window; detail with refunds, ledger, refundable amount |
 | POST | `/v1/payments/:id/cancel` | write | Cancel pending or processing |
 | POST | `/v1/payments/:id/sync` | write | Apply Stripe's current state |
+| POST | `/v1/payments/:id/anonymize` | write | Remove e-mail, description and metadata here and at Stripe |
+| POST | `/v1/reconciliation` | write | Compare a creation window with Stripe; `repair` syncs the differences |
 | POST | `/v1/payments/:id/refunds` | write | Refund (`Idempotency-Key`) |
 | GET | `/v1/ledger` | read | Entries and balance per currency |
 | GET | `/v1/provider-events` | read | Webhook events and what they did |
@@ -89,7 +91,8 @@ test/                         node:test suites and the fake Stripe
 ## Out of scope by design
 
 - Payment providers other than Stripe; manual capture, subscriptions, invoices, payouts and fees.
-- Disputes and chargebacks (visible in the Stripe dashboard; not mirrored here).
+- Disputes and chargebacks as a workflow: a `charge.dispute.*` webhook is announced as `payment.disputed`, but evidence, responses and outcomes stay in the Stripe dashboard.
+- Customer receipts and payment-failure e-mails: Stripe sends the receipt to `customerEmail` itself; `payment.failed` events let your own systems notify the customer.
 - Reversal of a refund that Stripe reports as failed after it succeeded.
 - Multi-currency conversion; amounts are kept in the currency they were charged in.
 

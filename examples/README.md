@@ -10,6 +10,7 @@ Scenario-driven walkthroughs of every feature. Requests to `/v1/*` (except the w
 | [Payment states](states.md) | The state machine and what moves a payment |
 | [Refunds](refunds.md) | Full and partial refunds, pending refunds, refunds made in the dashboard |
 | [Cancel and sync](cancel-and-sync.md) | Cancelling unpaid payments, catching up after missed webhooks |
+| [Finding and cleaning up payments](search-anonymize-reconcile.md) | Filters, anonymizing a customer, reconciliation against Stripe, disputes |
 | [Ledger](ledger.md) | Charges and refunds as entries, balances per currency |
 | [Events to atc-webhook-out](events.md) | payment.* and refund.* events, the outbox, retries |
 | [Testing without Stripe](testing.md) | The local fake provider, test keys, the provider switched off |

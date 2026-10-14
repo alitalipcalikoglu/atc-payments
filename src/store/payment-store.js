@@ -10,6 +10,8 @@ export class PaymentStore {
     this.raw = raw;
     this.stmt = {
       payment: raw.prepare('SELECT * FROM payments WHERE id = ?'),
+      anonymize: raw.prepare("UPDATE payments SET customer_email = NULL, metadata = '{}', description = '', last_error = NULL, updated_at = ? WHERE id = ?"),
+      inWindow: raw.prepare('SELECT * FROM payments WHERE created_at >= ? AND created_at < ? ORDER BY created_at, id LIMIT ?'),
       byProvider: raw.prepare('SELECT * FROM payments WHERE provider_id = ?'),
       insertPayment: raw.prepare(`INSERT INTO payments (id, provider_id, status, provider_status, amount, currency, description, customer_email, metadata, created_by, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -66,6 +68,13 @@ export class PaymentStore {
 
   /** @param {string} id @returns {PaymentRow|undefined} */
   payment(id) { return /** @type {any} */ (this.stmt.payment.get(id)); }
+  /** @param {string} providerId @returns {PaymentRow|undefined} */
+  /** @param {string} id @param {number} now */
+  anonymize(id, now) { this.stmt.anonymize.run(now, id); }
+
+  /** @param {number} from @param {number} to @param {number} limit @returns {PaymentRow[]} */
+  inWindow(from, to, limit) { return /** @type {any} */ (this.stmt.inWindow.all(from, to, limit)); }
+
   /** @param {string} providerId @returns {PaymentRow|undefined} */
   byProvider(providerId) { return /** @type {any} */ (this.stmt.byProvider.get(providerId)); }
   /** @param {PaymentRow} p */
@@ -147,13 +156,20 @@ export class PaymentStore {
 
   /**
    * Newest first, keyset paged on (created_at, id).
-   * @param {{ status?: string, before?: { at: number, id: string }, limit: number }} q
+   * @param {{ status?: string, before?: { at: number, id: string }, limit: number, email?: string, currency?: string, minAmount?: number, maxAmount?: number, from?: number, to?: number, metaKey?: string, metaValue?: string }} q
    * @returns {PaymentRow[]}
    */
   payments(q) {
     /** @type {string[]} */ const where = [];
     /** @type {(string|number)[]} */ const args = [];
     if (q.status) { where.push('status = ?'); args.push(q.status); }
+    if (q.email) { where.push('customer_email = ? COLLATE NOCASE'); args.push(q.email); }
+    if (q.currency) { where.push('currency = ?'); args.push(q.currency.toLowerCase()); }
+    if (q.minAmount !== undefined) { where.push('amount >= ?'); args.push(q.minAmount); }
+    if (q.maxAmount !== undefined) { where.push('amount <= ?'); args.push(q.maxAmount); }
+    if (q.from !== undefined) { where.push('created_at >= ?'); args.push(q.from); }
+    if (q.to !== undefined) { where.push('created_at < ?'); args.push(q.to); }
+    if (q.metaKey) { where.push("json_extract(metadata, '$.' || ?) = ?"); args.push(`"${q.metaKey.replace(/"/g, '')}"`, q.metaValue ?? ''); }
     if (q.before) { where.push('(created_at < ? OR (created_at = ? AND id < ?))'); args.push(q.before.at, q.before.at, q.before.id); }
     // Dynamic WHERE: prepared per call, never cached.
     return /** @type {any} */ (this.raw.prepare(`SELECT * FROM payments ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args, q.limit));

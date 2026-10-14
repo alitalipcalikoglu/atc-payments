@@ -7,6 +7,7 @@ With `WEBHOOK_OUT_URL` and `WEBHOOK_OUT_API_KEY` (a `publish` key), every change
 | `payment.created` | Created |
 | `payment.failed` | A payment attempt failed (back to pending) |
 | `payment.processing`, `payment.succeeded`, `payment.canceled` | Status moved |
+| `payment.disputed` | Stripe sent a `charge.dispute.*` event for the payment; data has `id` and `dispute` (`id`, `status`, `reason`, `amount`, `currency`, `event`). The payment's state does not change |
 | `payment.refunded` | Fully refunded |
 | `refund.succeeded`, `refund.failed`, `refund.canceled` | A refund settled |
 

@@ -175,3 +175,63 @@ test('outbox: the last failed attempt publishes ops.payments.outbox_dead once', 
   assert.equal(ops.length, 1, 'a dead event is not retried and not announced again');
   assert.deepEqual(t.service.stats().outbox, { pending: 0, dead: 1 });
 });
+
+test('list filters: e-mail, metadata, currency, amount range and creation window narrow the list together', async () => {
+  const t = testService(fake, WH);
+  const mk = async (/** @type {string} */ k, /** @type {any} */ body) => /** @type {any} */ (await create(t, k, body)).body.payment;
+  const a = await mk('list-filter-a', { amount: 1000, currency: 'eur', customerEmail: 'Ana@Example.com', metadata: { order: '1001' } });
+  const b = await mk('list-filter-b', { amount: 5000, currency: 'usd', customerEmail: 'bob@example.com', metadata: { order: '1002' } });
+  const ids = (/** @type {any} */ q) => t.store.payments({ limit: 50, ...q }).map((/** @type {any} */ p) => p.id);
+  assert.deepEqual(ids({ email: 'ana@example.com' }), [a.id], 'case-insensitive');
+  assert.deepEqual(ids({ metaKey: 'order', metaValue: '1002' }), [b.id]);
+  assert.deepEqual(ids({ currency: 'USD' }), [b.id]);
+  assert.deepEqual(ids({ minAmount: 2000 }), [b.id]);
+  assert.deepEqual(ids({ maxAmount: 2000 }), [a.id]);
+  assert.deepEqual(ids({ metaKey: 'order', metaValue: '1001', currency: 'usd' }), [], 'filters combine');
+  assert.deepEqual(ids({ from: Date.now() + 60_000 }), []);
+  assert.equal(ids({ to: Date.now() + 60_000 }).length >= 2, true);
+});
+
+test('anonymize: e-mail, description and metadata go here and at Stripe; amounts and the ledger stay; a provider failure changes nothing', async () => {
+  const t = testService(fake, WH, { audit: audit() });
+  const p = /** @type {any} */ (await create(t, 'anonymize-1', { amount: 2500, currency: 'eur', description: 'Ana, order 7', customerEmail: 'ana@example.com', metadata: { order: '7', note: 'x' } })).body.payment;
+  const ok = fake.transition(p.provider_id, 'succeeded');
+  t.service.webhook(ok.body, ok.signature);
+  fake.failNext = { count: 1, status: 503 };
+  await assert.rejects(t.service.anonymize(p.id, 'shop'), code('PROVIDER_ERROR'));
+  assert.equal(t.service.get(p.id).customer_email, 'ana@example.com', 'nothing changed after the provider failure');
+  const after = await t.service.anonymize(p.id, 'shop');
+  assert.deepEqual([after.customer_email, after.description, after.metadata, after.amount, after.status], [null, '', '{}', 2500, 'succeeded']);
+  const pi = fake.intents.get(p.provider_id);
+  assert.deepEqual([pi.receipt_email, pi.description, Object.keys(pi.metadata).filter((k) => !k.startsWith('atc_'))], [null, null, []], 'cleared at the provider too');
+  assert.equal(t.store.balance().find((/** @type {any} */ b) => b.currency === 'eur')?.net, 2500, 'the ledger is untouched');
+});
+
+test('reconcile: differences between this service and Stripe are listed and, with repair, synced', async () => {
+  const t = testService(fake, WH);
+  const p = /** @type {any} */ (await create(t, 'reconcile-1', { amount: 3000, currency: 'eur' })).body.payment;
+  const win = { from: Date.now() - 60_000, to: Date.now() + 60_000 };
+  assert.deepEqual((await t.service.reconcile(win)).mismatches, [], 'in step after creating');
+  fake.transition(p.provider_id, 'succeeded'); // Stripe moves on, the webhook is lost
+  const r = await t.service.reconcile(win);
+  assert.deepEqual(r.mismatches.map((m) => [m.id, m.local.status, m.provider.status]), [[p.id, 'pending', 'succeeded']]);
+  assert.equal(t.service.get(p.id).status, 'pending', 'a report alone changes nothing');
+  const fixed = await t.service.reconcile({ ...win, repair: true });
+  assert.deepEqual([fixed.repaired, t.service.get(p.id).status], [1, 'succeeded']);
+  assert.deepEqual((await t.service.reconcile(win)).mismatches, []);
+});
+
+test('dispute webhook: announced as payment.disputed without moving the payment; unknown intents are recorded as unknown', async () => {
+  const t = testService(fake, WH);
+  const p = /** @type {any} */ (await create(t, 'dispute-1', { amount: 1500, currency: 'eur' })).body.payment;
+  const ok = fake.transition(p.provider_id, 'succeeded');
+  t.service.webhook(ok.body, ok.signature);
+  const dispute = { id: 'dp_1Abc', object: 'dispute', amount: 1500, currency: 'eur', reason: 'fraudulent', status: 'needs_response', payment_intent: p.provider_id, charge: 'ch_1' };
+  const ev = fake.event('charge.dispute.created', dispute);
+  assert.equal(t.service.webhook(ev.body, ev.signature).outcome, 'applied');
+  assert.equal(t.service.get(p.id).status, 'succeeded');
+  const row = t.store.raw.prepare("SELECT data FROM outbox WHERE type = 'payment.disputed'").get();
+  assert.deepEqual(JSON.parse(/** @type {any} */ (row).data), { id: p.id, dispute: { id: 'dp_1Abc', status: 'needs_response', reason: 'fraudulent', amount: 1500, currency: 'eur', event: 'charge.dispute.created' } });
+  const other = fake.event('charge.dispute.created', { ...dispute, payment_intent: 'pi_foreign' });
+  assert.equal(t.service.webhook(other.body, other.signature).outcome, 'unknown');
+});

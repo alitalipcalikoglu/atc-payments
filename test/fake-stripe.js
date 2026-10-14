@@ -98,6 +98,13 @@ export class FakeStripe {
         if (!pi) return fail(404, 'invalid_request_error', `No such payment_intent: '${intent[1]}'`, 'resource_missing');
         // Real shape: latest_charge is only an id; refunds are read through GET /v1/refunds.
         if (req.method === 'GET' && !intent[2]) return send(200, { ...pi, latest_charge: pi.status === 'succeeded' ? `ch_${pi.id.slice(3)}` : null });
+        if (req.method === 'POST' && !intent[2]) {
+          // Update: empty strings unset a field or a metadata key, as the real API does.
+          if ('receipt_email' in params) pi.receipt_email = params.receipt_email || null;
+          if ('description' in params) pi.description = params.description || null;
+          for (const [k, v] of Object.entries(metadata)) { if (v === '') delete pi.metadata[k]; else pi.metadata[k] = v; }
+          return remember(200, pi);
+        }
         if (req.method === 'POST' && intent[2]) {
           if (pi.status === 'succeeded' || pi.status === 'canceled') return remember(400, { error: { type: 'invalid_request_error', message: `You cannot cancel this PaymentIntent because it has a status of ${pi.status}.`, code: 'payment_intent_unexpected_state' } });
           pi.status = 'canceled';

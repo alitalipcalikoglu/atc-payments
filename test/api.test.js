@@ -69,3 +69,23 @@ test('API: create with Idempotency-Key, replay, list, detail, webhook, refund, l
   assert.equal(JSON.parse((await app.inject({ method: 'POST', url: `/v1/payments/${payment.id}/cancel`, headers: headers(WRITE_KEY) })).body).error.code, 'INVALID_STATE');
   assert.equal((await app.inject({ url: '/v1/payments/pay_nope', headers: headers(READ_KEY) })).statusCode, 400);
 });
+
+test('API: list filters, anonymize and reconciliation (write keys only for the last two)', async (t) => {
+  const { app } = await buildApp(fake);
+  t.after(() => app.close());
+  const post = (/** @type {string} */ k, /** @type {any} */ b) => app.inject({ method: 'POST', url: '/v1/payments', headers: headers(WRITE_KEY, k), payload: b });
+  const a = JSON.parse((await post('api-filter-aaaa', { amount: 1100, currency: 'eur', customerEmail: 'filter@example.com', metadata: { order: 'F-1' } })).body).payment;
+  await post('api-filter-bbbb', { amount: 9900, currency: 'eur', metadata: { order: 'F-2' } });
+  const list = async (/** @type {string} */ q) => JSON.parse((await app.inject({ url: `/v1/payments?${q}`, headers: { authorization: `Bearer ${READ_KEY}` } })).body);
+  assert.deepEqual((await list('email=FILTER@example.com')).items.map((/** @type {any} */ p) => p.id), [a.id]);
+  assert.deepEqual((await list('metaKey=order&metaValue=F-2')).items.length, 1);
+  assert.equal((await list('minAmount=5000&currency=eur')).items.every((/** @type {any} */ p) => p.amount >= 5000), true);
+  assert.equal((await app.inject({ url: '/v1/payments?metaKey=bad%20key', headers: { authorization: `Bearer ${READ_KEY}` } })).statusCode, 400);
+  assert.equal((await app.inject({ method: 'POST', url: `/v1/payments/${a.id}/anonymize`, headers: { authorization: `Bearer ${READ_KEY}` } })).statusCode, 403);
+  const gone = JSON.parse((await app.inject({ method: 'POST', url: `/v1/payments/${a.id}/anonymize`, headers: { authorization: `Bearer ${WRITE_KEY}` } })).body);
+  assert.deepEqual([gone.payment.customerEmail, gone.payment.metadata], [null, {}]);
+  const rec = await app.inject({ method: 'POST', url: '/v1/reconciliation', headers: { authorization: `Bearer ${WRITE_KEY}` }, payload: { from: new Date(Date.now() - 3_600_000).toISOString(), to: new Date(Date.now() + 3_600_000).toISOString() } });
+  assert.deepEqual([rec.statusCode, JSON.parse(rec.body).mismatches], [200, []]);
+  const bad = await app.inject({ method: 'POST', url: '/v1/reconciliation', headers: { authorization: `Bearer ${WRITE_KEY}` }, payload: { from: '2030-01-02T00:00:00Z', to: '2030-01-01T00:00:00Z' } });
+  assert.equal(bad.statusCode, 400);
+});

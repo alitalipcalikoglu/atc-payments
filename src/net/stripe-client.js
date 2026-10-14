@@ -61,6 +61,14 @@ export class StripeClient {
     }, idempotencyKey);
   }
 
+  /**
+   * Remove personal data from an intent: empty strings unset `receipt_email`, `description` and metadata keys at Stripe.
+   * @param {string} id @param {string[]} metadataKeys
+   */
+  clearPersonalData(id, metadataKeys) {
+    return this.#call('POST', `/v1/payment_intents/${encodeURIComponent(id)}`, { receipt_email: '', description: '', metadata: Object.fromEntries(metadataKeys.map((k) => [k, ''])) });
+  }
+
   /** @param {string} id */
   retrievePaymentIntent(id) {
     return this.#call('GET', `/v1/payment_intents/${encodeURIComponent(id)}`);

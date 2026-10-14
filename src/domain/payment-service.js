@@ -20,6 +20,7 @@ import { PaymentState } from './payment-state.js';
  */
 export class PaymentService {
   static IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{8,255}$/;
+  static RECONCILE_MAX = 200;
   static METADATA_LIMITS = Object.freeze({ keys: 20, key: 40, value: 500 });
   static REFUND_REASONS = Object.freeze(['duplicate', 'fraudulent', 'requested_by_customer']);
 
@@ -133,6 +134,48 @@ export class PaymentService {
   }
 
   /**
+   * Remove the person from a payment: customer e-mail, description and metadata are cleared here and
+   * at Stripe (receipt e-mail, description, metadata keys); amounts, status and the ledger stay. The
+   * provider is called first, so a failure leaves everything as it was. Irreversible.
+   * @param {string} id @param {string} by
+   */
+  async anonymize(id, by) {
+    const p = this.get(id);
+    const stripe = this.#provider();
+    await this.#call(() => stripe.clearPersonalData(p.provider_id, Object.keys(JSON.parse(p.metadata))));
+    this.store.tx(() => { this.store.anonymize(p.id, this.now()); });
+    this.audit?.record({ action: 'atc-payments.payment.anonymize', actor: { type: 'apikey', id: by }, target: { type: 'payment', id: p.id } });
+    return this.get(id);
+  }
+
+  /**
+   * Compare the payments created in a window with what Stripe says (status and refunded amount) and
+   * list the differences; `repair` syncs every differing payment. At most 200 payments per call, oldest first.
+   * @param {{ from: number, to: number, repair?: boolean }} o
+   */
+  async reconcile({ from, to, repair = false }) {
+    const stripe = this.#provider();
+    const rows = this.store.inWindow(from, to, PaymentService.RECONCILE_MAX + 1);
+    const checked = rows.slice(0, PaymentService.RECONCILE_MAX);
+    /** @type {{ id: string, local: { status: string, amountRefunded: number }, provider: { status: string, amountRefunded: number } }[]} */
+    const mismatches = [];
+    for (const p of checked) {
+      const intent = await this.#call(() => stripe.retrievePaymentIntent(p.provider_id));
+      const refunds = await this.#call(() => stripe.listRefunds(p.provider_id));
+      const providerRefunded = refunds.filter((r) => r.status === 'succeeded').reduce((a, r) => a + Number(r.amount), 0);
+      const providerStatus = PaymentState.fromProvider(String(intent.status ?? '')) ?? String(intent.status);
+      const refundStatus = providerRefunded >= p.amount ? 'refunded' : providerRefunded > 0 ? 'partially_refunded' : providerStatus;
+      const effective = providerStatus === 'succeeded' ? refundStatus : providerStatus;
+      if (effective !== p.status || providerRefunded !== p.amount_refunded) {
+        mismatches.push({ id: p.id, local: { status: p.status, amountRefunded: p.amount_refunded }, provider: { status: effective, amountRefunded: providerRefunded } });
+      }
+    }
+    let repaired = 0;
+    if (repair) for (const m of mismatches) { await this.sync(m.id); repaired += 1; }
+    return { checked: checked.length, truncated: rows.length > checked.length, mismatches, repaired };
+  }
+
+  /**
    * Refund all that is left, or `amount` of it.
    * @param {string} id @param {{ amount?: number, reason?: string }} input @param {string} by @param {string} providerKey
    * @returns {Promise<{ refund: RefundRow, payment: PaymentRow }>}
@@ -190,6 +233,15 @@ export class PaymentService {
       else {
         const a = this.#applyIntent(p, obj, actor);
         r = { outcome: a.applied ? 'applied' : 'ignored', paymentId: p.id, detail: a.detail };
+      }
+    } else if (type.startsWith('charge.dispute.') && obj.object === 'dispute') {
+      // A dispute does not move the payment's state; the money side is Stripe's to settle. It is announced so a person looks.
+      const p = this.store.byProvider(String(obj.payment_intent ?? ''));
+      if (!p) r = { outcome: 'unknown', paymentId: null, detail: 'dispute of a payment not created through this service' };
+      else {
+        this.store.tx(() => { this.#queue('payment.disputed', { id: p.id, dispute: { id: String(obj.id), status: String(obj.status ?? ''), reason: String(obj.reason ?? ''), amount: Number(obj.amount ?? 0), currency: String(obj.currency ?? p.currency), event: type } }, this.now()); });
+        this.audit?.record({ action: 'atc-payments.payment.disputed', actor: { type: 'provider', id: 'stripe' }, target: { type: 'payment', id: p.id }, meta: { event: type, eventId, reason: String(obj.reason ?? ''), status: String(obj.status ?? '') } });
+        r = { outcome: 'applied', paymentId: p.id, detail: `dispute ${String(obj.status ?? '')}` };
       }
     } else if (type.startsWith('refund.') && obj.object === 'refund') {
       const a = this.#applyProviderRefund(obj, actor);

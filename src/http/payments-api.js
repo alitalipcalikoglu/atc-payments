@@ -120,13 +120,29 @@ export class PaymentsApi {
     });
 
     api.get('/payments', { ...read, schema: { querystring: Schemas.listQuery } }, async (request) => {
-      const q = /** @type {{ status?: string, limit?: string, cursor?: string }} */ (request.query);
+      const q = /** @type {Record<string, string|undefined>} */ (request.query);
       const limit = q.limit ? Number(q.limit) : 50;
       const [at, id] = q.cursor ? q.cursor.split('~') : [];
-      const rows = s.store.payments({ status: q.status, before: q.cursor ? { at: Number(at), id } : undefined, limit: limit + 1 });
+      const rows = s.store.payments({
+        status: q.status, email: q.email, currency: q.currency, minAmount: q.minAmount ? Number(q.minAmount) : undefined, maxAmount: q.maxAmount ? Number(q.maxAmount) : undefined,
+        from: q.from ? Date.parse(q.from) : undefined, to: q.to ? Date.parse(q.to) : undefined, metaKey: q.metaKey, metaValue: q.metaValue,
+        before: q.cursor ? { at: Number(at), id } : undefined, limit: limit + 1 });
       const page = rows.slice(0, limit);
       const last = page.at(-1);
       return { items: page.map(Views.payment), nextCursor: rows.length > limit && last ? `${last.created_at}~${last.id}` : null };
+    });
+
+    api.post('/payments/:id/anonymize', { config: { audit: AuditClient.route('atc-payments.payment.anonymize', target) }, ...write, schema: { params: Schemas.paymentParams } }, async (request) => {
+      await s.anonymize(pid(request), request.apiKey.id);
+      return detail(pid(request));
+    });
+
+    api.post('/reconciliation', { config: { audit: AuditClient.route('atc-payments.reconciliation.run', () => null, (r) => ({ repair: Boolean(/** @type {any} */ (r.body)?.repair) })) }, ...write, schema: { body: Schemas.reconcile } }, async (request) => {
+      const b = /** @type {{ from: string, to: string, repair?: boolean }} */ (request.body);
+      const from = Date.parse(b.from);
+      const to = Date.parse(b.to);
+      if (!(from < to)) throw new PaymentError('INVALID_ARGUMENT', 'from must be before to');
+      return s.reconcile({ from, to, repair: b.repair === true });
     });
 
     api.get('/payments/:id', { ...read, schema: { params: Schemas.paymentParams } }, async (request) => detail(pid(request)));

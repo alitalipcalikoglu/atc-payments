@@ -184,6 +184,14 @@ paths:
       tags: [payments]
       parameters:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/Status" } }
+        - { name: email, in: query, schema: { type: string, maxLength: 254 }, description: Customer e-mail address, exact match ignoring case. }
+        - { name: currency, in: query, schema: { type: string, pattern: "^[A-Za-z]{3}$" } }
+        - { name: minAmount, in: query, schema: { type: string, pattern: "^[0-9]{1,9}$" }, description: Minor units, inclusive. }
+        - { name: maxAmount, in: query, schema: { type: string, pattern: "^[0-9]{1,9}$" }, description: Minor units, inclusive. }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: Created at or after. }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: Created before. }
+        - { name: metaKey, in: query, schema: { type: string, pattern: "^[A-Za-z0-9_.-]{1,40}$" }, description: With metaValue, payments whose metadata has this value (for example an order number). }
+        - { name: metaValue, in: query, schema: { type: string, maxLength: 500 } }
         - { name: limit, in: query, schema: { type: string, pattern: "^([1-9]|[1-9][0-9]|100)$" }, description: "1-100, default 50." }
         - { name: cursor, in: query, schema: { type: string }, description: "`nextCursor` of the previous page." }
       responses:
@@ -222,6 +230,62 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "502": { $ref: "#/components/responses/ProviderError" }
+        "503": { $ref: "#/components/responses/Disabled" }
+
+  /v1/payments/{id}/anonymize:
+    parameters: [{ $ref: "#/components/parameters/PaymentParam" }]
+    post:
+      operationId: atc-payments.payments.anonymize
+      summary: Remove the person from a payment (write; irreversible)
+      description: Clears customer e-mail, description and metadata here and at Stripe (receipt e-mail, description, metadata keys). Amounts, status and the ledger stay. Stripe is called first; a provider failure changes nothing.
+      tags: [payments]
+      responses:
+        "200":
+          description: The payment after clearing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/ProviderError" }
+        "503": { $ref: "#/components/responses/Disabled" }
+
+  /v1/reconciliation:
+    post:
+      operationId: atc-payments.reconciliation.run
+      summary: Compare payments created in a window with Stripe (write)
+      description: Reads each payment (at most 200, oldest first) from Stripe and lists those whose status or refunded amount differ. With `repair`, every differing payment is synced.
+      tags: [payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [from, to]
+              properties:
+                from: { type: string, format: date-time }
+                to: { type: string, format: date-time }
+                repair: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checked, truncated, mismatches, repaired]
+                properties:
+                  checked: { type: integer }
+                  truncated: { type: boolean, description: More payments than the 200 checked lie in the window. }
+                  mismatches: { type: array, items: { type: object, properties: { id: { type: string }, local: { type: object }, provider: { type: object } } } }
+                  repaired: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "502": { $ref: "#/components/responses/ProviderError" }
         "503": { $ref: "#/components/responses/Disabled" }
 

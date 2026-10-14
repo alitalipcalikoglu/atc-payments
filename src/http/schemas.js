@@ -22,10 +22,19 @@ export class Schemas {
     type: 'object', additionalProperties: false,
     properties: {
       status: { type: 'string', enum: ['pending', 'processing', 'succeeded', 'canceled', 'partially_refunded', 'refunded'] },
+      email: { type: 'string', maxLength: 254 },
+      currency: { type: 'string', pattern: '^[A-Za-z]{3}$' },
+      minAmount: { type: 'string', pattern: '^[0-9]{1,9}$' },
+      maxAmount: { type: 'string', pattern: '^[0-9]{1,9}$' },
+      from: { type: 'string', format: 'date-time' },
+      to: { type: 'string', format: 'date-time' },
+      metaKey: { type: 'string', pattern: '^[A-Za-z0-9_.-]{1,40}$' },
+      metaValue: { type: 'string', maxLength: 500 },
       limit: { type: 'string', pattern: '^([1-9]|[1-9][0-9]|100)$' },
       cursor: { type: 'string', pattern: '^[0-9]{1,15}~pay_[0-9a-z]{6,12}[0-9a-f]{16}$' },
     },
   };
+  static reconcile = { type: 'object', additionalProperties: false, required: ['from', 'to'], properties: { from: { type: 'string', format: 'date-time' }, to: { type: 'string', format: 'date-time' }, repair: { type: 'boolean' } } };
   static ledgerQuery = { type: 'object', additionalProperties: false, properties: { limit: { type: 'string', pattern: '^([1-9]|[1-9][0-9]|1[0-9][0-9]|200)$' }, cursor: { type: 'string', pattern: '^[0-9]{1,15}$' } } };
   static eventsQuery = { type: 'object', additionalProperties: false, properties: { limit: { type: 'string', pattern: '^([1-9]|[1-9][0-9]|100)$' } } };
 }
