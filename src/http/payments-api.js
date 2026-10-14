@@ -7,6 +7,7 @@ import { PaymentError } from '../domain/errors.js';
 import { ApiKeyAuth } from './api-key-auth.js';
 import { Schemas } from './schemas.js';
 import { Views } from './views.js';
+import { AuditMetrics } from '../audit-metrics.js';
 
 /** @typedef {import('../config.js').Config} Config */
 /** @typedef {import('fastify').FastifyInstance} FastifyInstance */
@@ -29,7 +30,7 @@ export class PaymentsApi {
    * @param {import('../db.js').Database} deps.db
    * @param {string} deps.version
    * @param {import('../types.js').Logger} [deps.logger]
-   * @param {import('@atc-web/atc-service-core/audit').AuditClient} [deps.audit]
+   * @param {import('../audit/durable-audit.js').AuditSink} [deps.audit]
    */
   constructor({ config, audit, service, db, version, logger }) {
     this.config = config;
@@ -54,7 +55,7 @@ export class PaymentsApi {
     registerRequestContext(app, { trustProxy: config.trustProxy });
     app.decorateRequest('apiKey', /** @type {any} */ (null));
     app.setErrorHandler(createErrorHandler(PaymentError));
-    app.addHook('onSend', AuditClient.hook(this.audit));
+    app.addHook('onSend', AuditClient.hook(/** @type {any} */ (this.audit)));
     app.setNotFoundHandler((_request, reply) => {
       reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'route not found' } });
     });
@@ -185,6 +186,7 @@ export class PaymentsApi {
         '# HELP payments_provider_enabled Whether STRIPE_SECRET_KEY is set.',
         '# TYPE payments_provider_enabled gauge',
         `payments_provider_enabled ${st.provider === 'stripe' ? 1 : 0}`,
+        ...AuditMetrics.lines(this.audit),
         '# HELP payments_process_uptime_seconds Process uptime.',
         '# TYPE payments_process_uptime_seconds gauge',
         `payments_process_uptime_seconds ${process.uptime().toFixed(0)}`,

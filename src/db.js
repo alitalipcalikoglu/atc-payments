@@ -90,5 +90,15 @@ export class Database extends CoreDatabase {
     );
     CREATE INDEX outbox_due ON outbox (sent_at, next_at);
     `,
+    // 2: durable audit forwarding (see src/audit/durable-audit.js)
+    `
+    CREATE TABLE audit_outbox (
+      id      TEXT PRIMARY KEY,
+      at      INTEGER NOT NULL,
+      payload TEXT NOT NULL,
+      sent_at INTEGER
+    );
+    CREATE INDEX audit_outbox_pending ON audit_outbox (at) WHERE sent_at IS NULL;
+    `,
   ];
 }

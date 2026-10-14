@@ -95,7 +95,7 @@ test/                         node:test suites and the fake Stripe
 
 ## Audit events
 
-With `AUDIT_URL` and `AUDIT_API_KEY` set: `atc-payments.payment.create`, `.payment.cancel`, `.payment.sync`, `.refund.create` from the API (`success`, or `denied` on 403); `atc-payments.payment.<status>` and `atc-payments.refund.<status>` with the actor `provider:stripe` when a webhook changes something; `atc-payments.webhook.rejected` (`denied`) for bad signatures. Details: [examples/audit-events.md](examples/audit-events.md).
+With `AUDIT_URL` and `AUDIT_API_KEY` set: `atc-payments.payment.create`, `.payment.cancel`, `.payment.sync`, `.refund.create` from the API (`success`, or `denied` on 403); `atc-payments.payment.<status>` and `atc-payments.refund.<status>` with the actor `provider:stripe` when a webhook changes something; `atc-payments.webhook.rejected` (`denied`) for bad signatures. Unlike most services, forwarding is durable: each event is written to the `audit_outbox` table first and delivered by the audit client with retries, so a crash or an audit-service outage does not lose money events (`audit_forward_pending` shows the backlog). Details: [examples/audit-events.md](examples/audit-events.md).
 
 ## Scaling model
 
@@ -104,6 +104,8 @@ With `AUDIT_URL` and `AUDIT_API_KEY` set: `atc-payments.payment.create`, `.payme
 ## Observability
 
 Request logs with request id and trace context; `/metrics`; `/v1/stats`; `/v1/provider-events`; `/ready`.
+
+Audit forwarding is observable too: `audit_forward_enabled`, `audit_forward_events_total{result="recorded|sent|dropped|failed"}` and `audit_forward_pending`. A rising `dropped`, or a `pending` that does not drain, means audit events are being lost or delayed; alert on it.
 
 ## Backup / restore
 

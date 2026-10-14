@@ -96,12 +96,20 @@ export class FakeStripe {
       if (intent) {
         const pi = this.intents.get(intent[1]);
         if (!pi) return fail(404, 'invalid_request_error', `No such payment_intent: '${intent[1]}'`, 'resource_missing');
-        if (req.method === 'GET' && !intent[2]) return send(200, { ...pi, latest_charge: { id: `ch_${pi.id.slice(3)}`, refunds: { data: [...this.refunds.values()].filter((r) => r.payment_intent === pi.id) } } });
+        // Real shape: latest_charge is only an id; refunds are read through GET /v1/refunds.
+        if (req.method === 'GET' && !intent[2]) return send(200, { ...pi, latest_charge: pi.status === 'succeeded' ? `ch_${pi.id.slice(3)}` : null });
         if (req.method === 'POST' && intent[2]) {
           if (pi.status === 'succeeded' || pi.status === 'canceled') return remember(400, { error: { type: 'invalid_request_error', message: `You cannot cancel this PaymentIntent because it has a status of ${pi.status}.`, code: 'payment_intent_unexpected_state' } });
           pi.status = 'canceled';
           return remember(200, pi);
         }
+      }
+      if (req.method === 'GET' && path === '/v1/refunds') {
+        const q = new URL(String(req.url), 'http://x').searchParams;
+        const all = [...this.refunds.values()].filter((r) => r.payment_intent === q.get('payment_intent'));
+        const start = q.get('starting_after') ? all.findIndex((r) => r.id === q.get('starting_after')) + 1 : 0;
+        const limit = Number(q.get('limit') ?? 10);
+        return send(200, { object: 'list', url: '/v1/refunds', data: all.slice(start, start + limit), has_more: start + limit < all.length });
       }
       if (req.method === 'POST' && path === '/v1/refunds') {
         const pi = this.intents.get(params.payment_intent);

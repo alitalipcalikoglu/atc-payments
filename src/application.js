@@ -2,6 +2,7 @@ import { AuditClient } from '@atc-web/atc-service-core/audit';
 import { Lifecycle } from '@atc-web/atc-service-core/lifecycle';
 import { readServiceVersion } from '@atc-web/atc-service-core/fastify';
 import { Config } from './config.js';
+import { DurableAudit } from './audit/durable-audit.js';
 import { Database } from './db.js';
 import { PaymentService } from './domain/payment-service.js';
 import { PaymentsApi } from './http/payments-api.js';
@@ -17,9 +18,10 @@ export class Application {
   constructor(config) {
     this.config = config;
     this.version = readServiceVersion(import.meta.url);
-    this.audit = new AuditClient({ target: config.audit });
     this.db = new Database(config.dbPath, { backupDir: config.dbBackupDir });
     this.store = new PaymentStore(this.db);
+    // Money events must not be lost to a crash: outbox table first, network later.
+    this.audit = new DurableAudit({ AuditClient, target: config.audit, store: this.store, retentionDays: config.limits.eventRetentionDays });
     const { stripe } = config;
     this.service = new PaymentService({
       config, store: this.store, audit: this.audit,

@@ -13,7 +13,7 @@ stays ready). `atc-webhook-out` (optional, events through a transactional outbox
 ## Persistence
 SQLite at `DB_PATH` (`./data/payments.db`; Docker `/data/payments.db`), WAL. Tables: `payments`,
 `refunds`, `ledger` (append-only: update and delete triggers abort; `UNIQUE(kind, ref)`),
-`idempotency` (kept `IDEMPOTENCY_TTL_HOURS`), `provider_events` (each webhook event id once; kept
+`audit_outbox` (events for the audit service, written before delivery; sent rows purged after `EVENT_RETENTION_DAYS`), `idempotency` (kept `IDEMPOTENCY_TTL_HOURS`), `provider_events` (each webhook event id once; kept
 `EVENT_RETENTION_DAYS`), `outbox`. Migrations by `user_version`, snapshot before upgrading.
 
 ## Health / readiness

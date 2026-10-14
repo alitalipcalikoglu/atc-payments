@@ -28,7 +28,7 @@ export class PaymentService {
    * @param {import('../config.js').Config} deps.config
    * @param {import('../store/payment-store.js').PaymentStore} deps.store
    * @param {import('../net/stripe-client.js').StripeClient|null} deps.stripe
-   * @param {import('@atc-web/atc-service-core/audit').AuditClient} [deps.audit]
+   * @param {import('../audit/durable-audit.js').AuditSink} [deps.audit]
    * @param {() => number} [deps.now]
    * @param {import('../types.js').Logger} [deps.logger]
    */
@@ -126,7 +126,7 @@ export class PaymentService {
     const stripe = this.#provider();
     const intent = await this.#call(() => stripe.retrievePaymentIntent(p.provider_id));
     const r = this.#applyIntent(p, intent, null);
-    for (const re of intent.latest_charge?.refunds?.data ?? []) this.#applyProviderRefund(re, null);
+    for (const re of await this.#call(() => stripe.listRefunds(p.provider_id))) this.#applyProviderRefund(re, null);
     return { payment: this.get(id), changed: r.applied };
   }
 

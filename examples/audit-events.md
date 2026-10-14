@@ -13,3 +13,5 @@ With `AUDIT_URL` and `AUDIT_API_KEY` set:
 | `atc-payments.webhook.rejected` (outcome `denied`) | `provider` `stripe` | – | `reason`; with the caller's IP |
 
 API routes record `success`, or `denied` on 403. Reads are not audited.
+
+Forwarding is durable: events are stored in the service's own `audit_outbox` table before delivery and retried until the audit service accepts them, so a restart or an audit outage delays them but does not lose them.

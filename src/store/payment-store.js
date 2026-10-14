@@ -41,6 +41,11 @@ export class PaymentStore {
       outboxFailed: raw.prepare('UPDATE outbox SET attempts = attempts + 1, next_at = ?, last_error = ? WHERE seq = ?'),
       outboxStats: raw.prepare('SELECT SUM(CASE WHEN sent_at IS NULL AND attempts < ? THEN 1 ELSE 0 END) AS pending, SUM(CASE WHEN sent_at IS NULL AND attempts >= ? THEN 1 ELSE 0 END) AS dead FROM outbox'),
       outboxPrune: raw.prepare('DELETE FROM outbox WHERE sent_at IS NOT NULL AND sent_at < ?'),
+      auditInsert: raw.prepare('INSERT INTO audit_outbox (id, at, payload) VALUES (?, ?, ?)'),
+      auditPending: raw.prepare('SELECT id, at, payload FROM audit_outbox WHERE sent_at IS NULL ORDER BY at LIMIT ?'),
+      auditSent: raw.prepare('UPDATE audit_outbox SET sent_at = ? WHERE id = ?'),
+      auditPurge: raw.prepare('DELETE FROM audit_outbox WHERE sent_at IS NOT NULL AND sent_at < ?'),
+      auditBacklog: raw.prepare('SELECT COUNT(*) AS n FROM audit_outbox WHERE sent_at IS NULL'),
       byStatus: raw.prepare('SELECT status, COUNT(*) AS n FROM payments GROUP BY status'),
       volume: raw.prepare("SELECT currency, COUNT(*) AS n, SUM(amount) AS amount FROM payments WHERE created_at >= ? AND status IN ('succeeded', 'partially_refunded', 'refunded') GROUP BY currency ORDER BY currency"),
     };
@@ -125,6 +130,16 @@ export class PaymentStore {
   outboxStats(maxAttempts) { const r = this.stmt.outboxStats.get(maxAttempts, maxAttempts); return { pending: Number(r?.pending ?? 0), dead: Number(r?.dead ?? 0) }; }
   /** @param {number} cutoff */
   outboxPrune(cutoff) { return Number(this.stmt.outboxPrune.run(cutoff).changes); }
+
+  /** @param {string} id @param {number} at @param {string} payload */
+  auditInsert(id, at, payload) { this.stmt.auditInsert.run(id, at, payload); }
+  /** @param {number} limit @returns {{ id: string, at: number, payload: string }[]} */
+  auditPending(limit) { return /** @type {any} */ (this.stmt.auditPending.all(limit)); }
+  /** @param {string[]} ids @param {number} now */
+  auditMarkSent(ids, now) { this.tx(() => { for (const id of ids) this.stmt.auditSent.run(now, id); }); }
+  /** @param {number} cutoff */
+  auditPurge(cutoff) { return Number(this.stmt.auditPurge.run(cutoff).changes); }
+  auditBacklog() { return Number(this.stmt.auditBacklog.get()?.n ?? 0); }
 
   byStatus() { return Object.fromEntries(this.stmt.byStatus.all().map((r) => [String(r.status), Number(r.n)])); }
   /** @param {number} since */

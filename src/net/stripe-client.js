@@ -66,6 +66,27 @@ export class StripeClient {
     return this.#call('GET', `/v1/payment_intents/${encodeURIComponent(id)}`);
   }
 
+  /**
+   * Refunds of one PaymentIntent. A PaymentIntent only carries `latest_charge` as an id, and a
+   * Charge no longer embeds its refunds, so the refund list endpoint is the way to read them.
+   * @param {string} paymentIntentId
+   * @returns {Promise<any[]>}
+   */
+  async listRefunds(paymentIntentId) {
+    /** @type {any[]} */
+    const out = [];
+    let after = '';
+    for (let page = 0; page < 10; page++) {
+      const q = new URLSearchParams({ payment_intent: paymentIntentId, limit: '100', ...(after ? { starting_after: after } : {}) });
+      const list = await this.#call('GET', `/v1/refunds?${q}`);
+      const data = Array.isArray(list.data) ? list.data : [];
+      out.push(...data);
+      if (!list.has_more || !data.length) break;
+      after = String(data.at(-1).id);
+    }
+    return out;
+  }
+
   /** @param {string} id @param {string} idempotencyKey */
   cancelPaymentIntent(id, idempotencyKey) {
     return this.#call('POST', `/v1/payment_intents/${encodeURIComponent(id)}/cancel`, {}, idempotencyKey);
