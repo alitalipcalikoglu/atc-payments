@@ -1,0 +1,432 @@
+openapi: 3.1.0
+info:
+  title: atc-payments
+  version: "1.0.0"
+  description: >
+    Payments through Stripe's REST API (no SDK). A payment is a Stripe PaymentIntent: create it
+    here, confirm it in the browser with the returned `clientSecret` (Stripe.js), and Stripe's
+    signed webhooks move it through the state machine pending → processing → succeeded →
+    partially_refunded → refunded (or canceled). Every money movement is appended to the ledger
+    once; every change queues an event for atc-webhook-out (`payment.created`, `payment.failed`,
+    `payment.processing`, `payment.succeeded`, `payment.canceled`, `payment.refunded`,
+    `refund.succeeded`, `refund.failed`, `refund.canceled`).
+
+
+    Creates and refunds need an `Idempotency-Key` header (8-255 characters of letters, digits and
+    `._:-`), kept 24 hours per API key: the same key with the same body replays the stored answer
+    (`Idempotent-Replayed: true`), with another body answers `409 IDEMPOTENCY_MISMATCH`. Stripe
+    gets a key derived from it, so retrying after a lost response never charges twice.
+
+
+    Auth: `Authorization: Bearer <api-key>` on every `/v1/*` and `/metrics` route except the
+    webhook. Roles: `read` (payments, ledger, provider events, stats) and `write` (also create,
+    cancel, sync, refund). With `STRIPE_SECRET_KEY` empty the provider is disabled (`503
+    PROVIDER_DISABLED`); with `STRIPE_WEBHOOK_SECRET` empty the webhook answers `503`.
+servers:
+  - url: /
+security:
+  - ApiKeyAuth: []
+tags:
+  - name: payments
+  - name: refunds
+  - name: ledger
+  - name: webhooks
+  - name: stats
+  - name: ops
+paths:
+  /openapi.yaml:
+    get:
+      operationId: atc-payments.openapi
+      summary: Download the canonical OpenAPI document
+      security: []
+      responses:
+        "200": { description: Canonical OpenAPI document., content: { text/yaml: { schema: { type: string } } } }
+  /health:
+    get:
+      operationId: atc-payments.health.get
+      summary: Liveness probe
+      tags: [ops]
+      security: []
+      x-stack-visibility: public
+      responses:
+        "200": { description: Process is up., content: { application/json: { schema: { type: object, required: [status], properties: { status: { type: string, enum: [ok] } } } } } }
+  /ready:
+    get:
+      operationId: atc-payments.ready.get
+      summary: Readiness probe
+      description: Database ping, cached for 10 seconds. The body says whether the provider, the webhook endpoint and event forwarding are enabled; a disabled provider does not make the service unready.
+      tags: [ops]
+      security: []
+      x-stack-visibility: public
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, provider, webhooks, webhookOut]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  provider: { type: string, enum: [stripe, disabled] }
+                  webhooks: { type: string, enum: [enabled, disabled] }
+                  webhookOut: { type: string, enum: [enabled, disabled] }
+        "503": { description: The cached readiness check last failed., content: { application/json: { schema: { type: object, required: [status, error], properties: { status: { type: string, enum: [unavailable] }, error: { type: string } } } } } }
+  /v1/info:
+    get:
+      operationId: atc-payments.info.get
+      summary: Service identity and capabilities
+      tags: [ops]
+      security: []
+      x-stack-visibility: public
+      responses:
+        "200":
+          description: Instance identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [service, version, apiVersion, capabilities, schemaVersion, serviceCore]
+                properties:
+                  service: { type: string, const: atc-payments }
+                  version: { type: string }
+                  apiVersion: { type: string, const: v1 }
+                  capabilities: { type: array, items: { type: string }, description: "`stripe`, `payment-intents`, `refunds`, `idempotency-keys`, `signed-webhooks`, `ledger`, `webhook-out-events`." }
+                  schemaVersion: { type: integer }
+                  serviceCore: { type: string }
+  /metrics:
+    get:
+      operationId: atc-payments.metrics.get
+      summary: Prometheus text-format metrics
+      description: Requires a `read`-capable key. Not rate-limited.
+      tags: [ops]
+      x-stack-visibility: operational
+      responses:
+        "200": { description: "`payments_total{status}`, `payments_ledger_net{currency}`, `payments_outbox_pending{state}`, `payments_provider_enabled`, `payments_process_uptime_seconds`.", content: { text/plain: { schema: { type: string } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/webhooks/stripe:
+    post:
+      operationId: atc-payments.webhooks.stripe
+      summary: Stripe webhook endpoint
+      description: >
+        No API key: the `Stripe-Signature` header (HMAC-SHA256 over `<t>.<raw body>` with
+        STRIPE_WEBHOOK_SECRET, compared in constant time, timestamp within WEBHOOK_TOLERANCE_SEC)
+        is the authentication. Each event id is applied once; replays answer `duplicate`. Handles
+        `payment_intent.*` and `refund.*`; other types are acknowledged and ignored.
+      tags: [webhooks]
+      security: []
+      x-stack-visibility: public
+      parameters:
+        - { name: stripe-signature, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: A Stripe event. }
+      responses:
+        "200":
+          description: Received.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [received, id, type, outcome]
+                properties:
+                  received: { type: boolean, const: true }
+                  id: { type: string }
+                  type: { type: string }
+                  outcome: { type: string, enum: [applied, ignored, unknown, duplicate], description: "`unknown` = not a payment of this service; `ignored` = no change (unhandled type, refused transition)." }
+        "400": { description: "`INVALID_SIGNATURE` or `INVALID_ARGUMENT`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "503": { description: "`WEBHOOK_DISABLED`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+
+  /v1/payments:
+    post:
+      operationId: atc-payments.payments.create
+      summary: Create a payment (write; Idempotency-Key required)
+      description: Creates a Stripe PaymentIntent with automatic payment methods. Confirm it in the browser with `clientSecret`; the outcome arrives by webhook. `clientSecret` is only in this response (and its replays).
+      tags: [payments]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [amount, currency]
+              properties:
+                amount: { type: integer, minimum: 1, maximum: 99999999, description: "Minor units (cents). Between MIN_AMOUNT and MAX_AMOUNT." }
+                currency: { type: string, pattern: "^[A-Za-z]{3}$", description: One of CURRENCIES. }
+                description: { type: string, maxLength: 500 }
+                customerEmail: { type: string, maxLength: 254, description: Stripe sends the receipt here. }
+                metadata: { type: object, maxProperties: 20, additionalProperties: { type: string, maxLength: 500 }, description: "Keys 1-40 of letters, digits, `_.-`, not starting with `atc_`." }
+      responses:
+        "201":
+          description: Created (or replayed; see `Idempotent-Replayed`).
+          headers:
+            idempotent-replayed: { schema: { type: string, enum: ["true", "false"] } }
+          content:
+            application/json:
+              schema: { type: object, required: [payment, clientSecret], properties: { payment: { $ref: "#/components/schemas/Payment" }, clientSecret: { type: string } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { description: "`PROVIDER_DECLINED`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { description: "`PROVIDER_REJECTED`: Stripe refused the request.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "502": { $ref: "#/components/responses/ProviderError" }
+        "503": { $ref: "#/components/responses/Disabled" }
+    get:
+      operationId: atc-payments.payments.list
+      summary: Payments, newest first
+      tags: [payments]
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/Status" } }
+        - { name: limit, in: query, schema: { type: string, pattern: "^([1-9]|[1-9][0-9]|100)$" }, description: "1-100, default 50." }
+        - { name: cursor, in: query, schema: { type: string }, description: "`nextCursor` of the previous page." }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: { type: object, required: [items, nextCursor], properties: { items: { type: array, items: { $ref: "#/components/schemas/Payment" } }, nextCursor: { type: [string, "null"] } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/payments/{id}:
+    parameters: [{ $ref: "#/components/parameters/PaymentParam" }]
+    get:
+      operationId: atc-payments.payments.get
+      summary: One payment with its refunds and ledger entries
+      tags: [payments]
+      responses:
+        "200": { $ref: "#/components/responses/Detail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/payments/{id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/PaymentParam" }]
+    post:
+      operationId: atc-payments.payments.cancel
+      summary: Cancel a pending or processing payment (write)
+      description: A canceled payment is returned as it is; succeeded or refunded ones answer `409 INVALID_STATE`.
+      tags: [payments]
+      responses:
+        "200": { $ref: "#/components/responses/Detail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "502": { $ref: "#/components/responses/ProviderError" }
+        "503": { $ref: "#/components/responses/Disabled" }
+
+  /v1/payments/{id}/sync:
+    parameters: [{ $ref: "#/components/parameters/PaymentParam" }]
+    post:
+      operationId: atc-payments.payments.sync
+      summary: Read the payment from Stripe and apply its status and refunds (write)
+      description: For missed webhooks. The same state machine applies; `changed` says whether the status moved.
+      tags: [payments]
+      responses:
+        "200":
+          description: The payment afterwards.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaymentDetail"
+                  - { type: object, required: [changed], properties: { changed: { type: boolean } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/ProviderError" }
+        "503": { $ref: "#/components/responses/Disabled" }
+
+  /v1/payments/{id}/refunds:
+    parameters: [{ $ref: "#/components/parameters/PaymentParam" }]
+    post:
+      operationId: atc-payments.refunds.create
+      summary: Refund a payment (write; Idempotency-Key required)
+      description: Without `amount`, everything still refundable (pending refunds count as used). Only succeeded or partially refunded payments. A pending refund settles by webhook.
+      tags: [refunds]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                amount: { type: integer, minimum: 1, maximum: 99999999 }
+                reason: { type: string, enum: [duplicate, fraudulent, requested_by_customer] }
+      responses:
+        "201":
+          description: Created (or replayed).
+          headers:
+            idempotent-replayed: { schema: { type: string, enum: ["true", "false"] } }
+          content:
+            application/json:
+              schema: { type: object, required: [refund, payment], properties: { refund: { $ref: "#/components/schemas/Refund" }, payment: { $ref: "#/components/schemas/Payment" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { description: "`PROVIDER_REJECTED`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "502": { $ref: "#/components/responses/ProviderError" }
+        "503": { $ref: "#/components/responses/Disabled" }
+
+  /v1/ledger:
+    get:
+      operationId: atc-payments.ledger.list
+      summary: Ledger entries, newest first, with the balance per currency
+      tags: [ledger]
+      parameters:
+        - { name: limit, in: query, schema: { type: string, pattern: "^([1-9]|[1-9][0-9]|1[0-9][0-9]|200)$" } }
+        - { name: cursor, in: query, schema: { type: string, pattern: "^[0-9]{1,15}$" } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, balance, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/LedgerEntry" } }
+                  balance: { type: array, items: { $ref: "#/components/schemas/Balance" } }
+                  nextCursor: { type: [string, "null"] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/provider-events:
+    get:
+      operationId: atc-payments.events.list
+      summary: Recent Stripe webhook events and what they did
+      tags: [webhooks]
+      parameters:
+        - { name: limit, in: query, schema: { type: string, pattern: "^([1-9]|[1-9][0-9]|100)$" } }
+      responses:
+        "200":
+          description: Newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        type: { type: string }
+                        paymentId: { type: [string, "null"] }
+                        outcome: { type: string, enum: [applied, ignored, unknown] }
+                        detail: { type: [string, "null"] }
+                        receivedAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/stats:
+    get:
+      operationId: atc-payments.stats.get
+      summary: Payments by status, 24 h volume, balances, outbox
+      tags: [stats]
+      responses:
+        "200":
+          description: Totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider, webhooks, webhookOut, byStatus, volume24h, balance, outbox, currencies]
+                properties:
+                  provider: { type: string, enum: [stripe, disabled] }
+                  webhooks: { type: string, enum: [enabled, disabled] }
+                  webhookOut: { type: string, enum: [enabled, disabled] }
+                  byStatus: { type: object, additionalProperties: { type: integer } }
+                  volume24h: { type: array, items: { type: object, properties: { currency: { type: string }, payments: { type: integer }, amount: { type: integer } } } }
+                  balance: { type: array, items: { $ref: "#/components/schemas/Balance" } }
+                  outbox: { type: object, properties: { pending: { type: integer }, dead: { type: integer } } }
+                  currencies: { type: array, items: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: "`PAYMENTS_API_KEYS=id:secret:role`; role `read` or `write`."
+  parameters:
+    PaymentParam: { name: id, in: path, required: true, schema: { type: string, pattern: "^pay_[0-9a-z]{6,12}[0-9a-f]{16}$" } }
+    IdempotencyKey: { name: idempotency-key, in: header, required: true, schema: { type: string, pattern: "^[A-Za-z0-9._:-]{8,255}$" } }
+  responses:
+    BadRequest: { description: "`VALIDATION_FAILED`, `INVALID_ARGUMENT` or `IDEMPOTENCY_KEY_REQUIRED`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    Unauthorized: { description: Missing or invalid API key., headers: { www-authenticate: { schema: { type: string, const: Bearer } } }, content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    Forbidden: { description: "`FORBIDDEN`: role.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    NotFound: { description: "`PAYMENT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    Conflict: { description: "`INVALID_STATE`, `AMOUNT_EXCEEDS_REMAINING`, `IDEMPOTENCY_MISMATCH`, `IDEMPOTENCY_IN_PROGRESS`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    ProviderError: { description: "`PROVIDER_ERROR`: Stripe unreachable, timed out, 429 or 5xx; retry with the same Idempotency-Key.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    Disabled: { description: "`PROVIDER_DISABLED`: STRIPE_SECRET_KEY is not set.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    Detail: { description: The payment., content: { application/json: { schema: { $ref: "#/components/schemas/PaymentDetail" } } } }
+  schemas:
+    ErrorEnvelope: { type: object, required: [error], properties: { error: { type: object, required: [code, message], properties: { code: { type: string }, message: { type: string }, details: {} } } } }
+    Status: { type: string, enum: [pending, processing, succeeded, canceled, partially_refunded, refunded] }
+    Payment:
+      type: object
+      properties:
+        id: { type: string }
+        status: { $ref: "#/components/schemas/Status" }
+        amount: { type: integer }
+        currency: { type: string }
+        amountRefunded: { type: integer }
+        description: { type: string }
+        customerEmail: { type: [string, "null"] }
+        metadata: { type: object, additionalProperties: { type: string } }
+        lastError: { type: [string, "null"], description: The last payment failure while pending. }
+        provider: { type: object, properties: { name: { type: string, const: stripe }, id: { type: string }, status: { type: [string, "null"] } } }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Refund:
+      type: object
+      properties:
+        id: { type: string }
+        paymentId: { type: string }
+        status: { type: string, enum: [pending, succeeded, failed, canceled] }
+        amount: { type: integer }
+        reason: { type: [string, "null"] }
+        failureReason: { type: [string, "null"] }
+        providerId: { type: string }
+        createdBy: { type: string, description: API key id, or `stripe` for a refund made in the Stripe dashboard. }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    LedgerEntry:
+      type: object
+      properties:
+        seq: { type: integer }
+        paymentId: { type: string }
+        kind: { type: string, enum: [charge, refund] }
+        amount: { type: integer, description: Signed minor units. }
+        currency: { type: string }
+        ref: { type: string, description: Stripe PaymentIntent or Refund id. }
+        at: { type: string, format: date-time }
+    Balance: { type: object, properties: { currency: { type: string }, charged: { type: integer }, refunded: { type: integer }, net: { type: integer }, entries: { type: integer } } }
+    PaymentDetail:
+      type: object
+      required: [payment, refunds, ledger, refundable]
+      properties:
+        payment: { $ref: "#/components/schemas/Payment" }
+        refunds: { type: array, items: { $ref: "#/components/schemas/Refund" } }
+        ledger: { type: array, items: { $ref: "#/components/schemas/LedgerEntry" } }
+        refundable: { type: integer, description: What can still be refunded now. }
