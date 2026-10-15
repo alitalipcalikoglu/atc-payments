@@ -3,6 +3,7 @@ export class PaymentError extends Error {
   /** @type {Record<string, number>} */
   static STATUS = {
     PAYMENT_NOT_FOUND: 404,
+    DISPUTE_NOT_FOUND: 404,
     INVALID_STATE: 409,
     IDEMPOTENCY_MISMATCH: 409,
     IDEMPOTENCY_IN_PROGRESS: 409,

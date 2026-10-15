@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { StripeSignature } from '../net/stripe-signature.js';
 import { StripeError } from '../net/stripe-client.js';
+import { PaymentStore } from '../store/payment-store.js';
 import { PaymentError } from './errors.js';
 import { PaymentState } from './payment-state.js';
 
@@ -239,7 +240,10 @@ export class PaymentService {
       const p = this.store.byProvider(String(obj.payment_intent ?? ''));
       if (!p) r = { outcome: 'unknown', paymentId: null, detail: 'dispute of a payment not created through this service' };
       else {
-        this.store.tx(() => { this.#queue('payment.disputed', { id: p.id, dispute: { id: String(obj.id), status: String(obj.status ?? ''), reason: String(obj.reason ?? ''), amount: Number(obj.amount ?? 0), currency: String(obj.currency ?? p.currency), event: type } }, this.now()); });
+        this.store.tx(() => {
+          this.store.upsertDispute({ id: String(obj.id), paymentId: p.id, amount: Number(obj.amount ?? 0), currency: String(obj.currency ?? p.currency), reason: String(obj.reason ?? ''), status: String(obj.status ?? ''), dueBy: obj.evidence_details?.due_by ? Number(obj.evidence_details.due_by) * 1000 : null }, this.now());
+          this.#queue('payment.disputed', { id: p.id, dispute: { id: String(obj.id), status: String(obj.status ?? ''), reason: String(obj.reason ?? ''), amount: Number(obj.amount ?? 0), currency: String(obj.currency ?? p.currency), event: type } }, this.now());
+        });
         this.audit?.record({ action: 'atc-payments.payment.disputed', actor: { type: 'provider', id: 'stripe' }, target: { type: 'payment', id: p.id }, meta: { event: type, eventId, reason: String(obj.reason ?? ''), status: String(obj.status ?? '') } });
         r = { outcome: 'applied', paymentId: p.id, detail: `dispute ${String(obj.status ?? '')}` };
       }
@@ -285,6 +289,7 @@ export class PaymentService {
       provider: this.enabled ? 'stripe' : 'disabled', webhooks: this.config.stripe.webhookSecret ? 'enabled' : 'disabled', webhookOut: this.config.webhookOut ? 'enabled' : 'disabled',
       byStatus: this.store.byStatus(), volume24h: this.store.volume(this.now() - 86_400_000), balance: this.store.balance(),
       outbox: this.store.outboxStats(this.config.limits.outboxMaxAttempts), currencies: this.config.limits.currencies,
+      disputes: this.store.disputeCounts(),
     };
   }
 
@@ -366,6 +371,55 @@ export class PaymentService {
   /** @param {PaymentRow} p */
   #event(p) {
     return { id: p.id, status: p.status, amount: p.amount, currency: p.currency, amountRefunded: p.amount_refunded, metadata: JSON.parse(p.metadata), providerId: p.provider_id };
+  }
+
+  // ---- disputes
+
+  /** Text evidence fields Stripe accepts on a dispute (files are uploaded in the Stripe dashboard). */
+  static EVIDENCE_FIELDS = ['access_activity_log', 'billing_address', 'cancellation_policy_disclosure', 'cancellation_rebuttal', 'customer_email_address', 'customer_name', 'customer_purchase_ip',
+    'duplicate_charge_explanation', 'duplicate_charge_id', 'product_description', 'refund_policy_disclosure', 'refund_refusal_explanation', 'service_date', 'shipping_address',
+    'shipping_carrier', 'shipping_date', 'shipping_tracking_number', 'uncategorized_text'];
+  static EVIDENCE_MAX = 20_000;
+
+  /** @param {string} id */
+  dispute(id) {
+    const d = this.store.dispute(id);
+    if (!d) throw new PaymentError('DISPUTE_NOT_FOUND', `dispute ${id} not found`);
+    return d;
+  }
+
+  /** @param {import('../types.js').DisputeRow} d */
+  static #open(d) {
+    if (!PaymentStore.RESPONDABLE_DISPUTE.includes(d.status)) throw new PaymentError('INVALID_STATE', `dispute ${d.id} is ${d.status}; only disputes that need a response take evidence or can be accepted`);
+  }
+
+  /**
+   * Save evidence on Stripe (merged with what was sent before); `submit` sends it to the issuer.
+   * @param {string} id @param {{ evidence: Record<string, string>, submit?: boolean }} input @param {string} actor
+   */
+  async disputeEvidence(id, input, actor) {
+    const d = this.dispute(id);
+    PaymentService.#open(d);
+    for (const [k, v] of Object.entries(input.evidence)) {
+      if (!PaymentService.EVIDENCE_FIELDS.includes(k)) throw new PaymentError('INVALID_ARGUMENT', `"${k}" is not a text evidence field`, { allowed: PaymentService.EVIDENCE_FIELDS });
+      if (typeof v !== 'string' || v.length > PaymentService.EVIDENCE_MAX) throw new PaymentError('INVALID_ARGUMENT', `evidence "${k}" must be a string up to ${PaymentService.EVIDENCE_MAX} characters`);
+    }
+    const stripe = this.#provider();
+    const res = await this.#call(() => stripe.updateDispute(d.id, input.evidence, input.submit === true));
+    const now = this.now();
+    const merged = { ...JSON.parse(d.evidence), ...input.evidence };
+    this.store.disputeEvidence(d.id, JSON.stringify(merged), String(res.status ?? d.status), input.submit ? now : d.submitted_at, input.submit ? actor : d.submitted_by, now);
+    return this.dispute(d.id);
+  }
+
+  /** Concede an open dispute; Stripe closes it as lost. @param {string} id */
+  async acceptDispute(id) {
+    const d = this.dispute(id);
+    PaymentService.#open(d);
+    const stripe = this.#provider();
+    const res = await this.#call(() => stripe.closeDispute(d.id));
+    this.store.disputeStatus(d.id, String(res.status ?? 'lost'), this.now());
+    return this.dispute(d.id);
   }
 
   #provider() {

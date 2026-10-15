@@ -17,6 +17,25 @@ export class Schemas {
     properties: { amount: { type: 'integer', minimum: 1, maximum: 99_999_999 }, reason: { type: 'string', enum: ['duplicate', 'fraudulent', 'requested_by_customer'] } },
   };
 
+  static disputeParams = { type: 'object', properties: { id: { type: 'string', pattern: '^(dp|du)_[A-Za-z0-9]{6,64}$' } }, required: ['id'] };
+  static disputesQuery = {
+    type: 'object', additionalProperties: false,
+    properties: {
+      status: { type: 'string', pattern: '^[a-z_]{2,40}$' },
+      open: { type: 'string', enum: ['true', 'false'] },
+      payment: Schemas.paymentId,
+      limit: { type: 'string', pattern: '^([1-9]|[1-9][0-9]|100)$' },
+      cursor: { type: 'string', maxLength: 120 },
+    },
+  };
+  static evidence = {
+    type: 'object', additionalProperties: false, required: ['evidence'],
+    properties: {
+      evidence: { type: 'object', minProperties: 1, maxProperties: 18, additionalProperties: { type: 'string', maxLength: 20_000 } },
+      submit: { type: 'boolean' },
+    },
+  };
+
   static paymentParams = { type: 'object', properties: { id: Schemas.paymentId }, required: ['id'] };
   static listQuery = {
     type: 'object', additionalProperties: false,

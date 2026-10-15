@@ -60,6 +60,22 @@
  */
 
 /**
+ * @typedef {object} DisputeRow
+ * @property {string} id               Stripe dispute id (dp_…).
+ * @property {string} payment_id
+ * @property {number} amount
+ * @property {string} currency
+ * @property {string} reason           Stripe reason (fraudulent, product_not_received, …).
+ * @property {string} status           Stripe status (needs_response, under_review, won, lost, …).
+ * @property {number|null} evidence_due_by
+ * @property {string} evidence         JSON of the text evidence last sent.
+ * @property {number|null} submitted_at
+ * @property {string|null} submitted_by
+ * @property {number} created_at
+ * @property {number} updated_at
+ */
+
+/**
  * @typedef {object} RefundRow
  * @property {string} id
  * @property {string} payment_id

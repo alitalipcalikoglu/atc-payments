@@ -109,6 +109,19 @@ export class StripeClient {
   }
 
   /**
+   * Save text evidence on a dispute; `submit: true` sends it to the card issuer (final, no more edits).
+   * @param {string} id @param {Record<string, string>} evidence @param {boolean} submit
+   */
+  updateDispute(id, evidence, submit) {
+    return this.#call('POST', `/v1/disputes/${encodeURIComponent(id)}`, { evidence, submit: submit ? 'true' : 'false' });
+  }
+
+  /** Accept a dispute (concede it): Stripe marks it lost. @param {string} id */
+  closeDispute(id) {
+    return this.#call('POST', `/v1/disputes/${encodeURIComponent(id)}/close`, {});
+  }
+
+  /**
    * @param {'GET'|'POST'} method @param {string} path @param {Record<string, unknown>} [params] @param {string} [idempotencyKey]
    * @returns {Promise<any>}
    */

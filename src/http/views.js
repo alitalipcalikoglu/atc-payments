@@ -19,6 +19,15 @@ export class Views {
     return { id: r.id, paymentId: r.payment_id, status: r.status, amount: Number(r.amount), reason: r.reason, failureReason: r.failure_reason, providerId: r.provider_id, createdBy: r.created_by, createdAt: Views.iso(r.created_at), updatedAt: Views.iso(r.updated_at) };
   }
 
+  /** @param {import('../types.js').DisputeRow} d */
+  static dispute(d) {
+    return {
+      id: d.id, paymentId: d.payment_id, amount: Number(d.amount), currency: d.currency, reason: d.reason, status: d.status,
+      evidenceDueBy: d.evidence_due_by === null ? null : Views.iso(d.evidence_due_by), evidence: JSON.parse(d.evidence),
+      submittedAt: d.submitted_at === null ? null : Views.iso(d.submitted_at), submittedBy: d.submitted_by, createdAt: Views.iso(d.created_at), updatedAt: Views.iso(d.updated_at),
+    };
+  }
+
   /** @param {import('../types.js').LedgerRow} l */
   static ledger(l) {
     return { seq: Number(l.seq), paymentId: l.payment_id, kind: l.kind, amount: Number(l.amount), currency: l.currency, ref: l.ref, at: Views.iso(l.at) };

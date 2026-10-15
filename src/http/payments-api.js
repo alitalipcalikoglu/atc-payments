@@ -107,7 +107,7 @@ export class PaymentsApi {
     const send = (reply, out) => reply.code(out.status).header('idempotent-replayed', String(out.replayed)).send(out.body);
     const detail = (/** @type {string} */ id) => {
       const p = s.get(id);
-      return { payment: Views.payment(p), refunds: s.store.refundsOf(p.id).map(Views.refund), ledger: s.store.ledgerOf(p.id).map(Views.ledger), refundable: ['succeeded', 'partially_refunded'].includes(p.status) ? p.amount - p.amount_refunded - s.store.pendingRefunded(p.id) : 0 };
+      return { payment: Views.payment(p), refunds: s.store.refundsOf(p.id).map(Views.refund), disputes: s.store.disputesOf(p.id).map(Views.dispute), ledger: s.store.ledgerOf(p.id).map(Views.ledger), refundable: ['succeeded', 'partially_refunded'].includes(p.status) ? p.amount - p.amount_refunded - s.store.pendingRefunded(p.id) : 0 };
     };
 
     api.post('/payments', { config: { audit: AuditClient.route('atc-payments.payment.create', (_r, b) => (b?.payment?.id ? { type: 'payment', id: b.payment.id } : null), (_r, b) => (b?.payment ? { amount: b.payment.amount, currency: b.payment.currency } : undefined)) }, ...write, schema: { body: Schemas.create } }, async (request, reply) => {
@@ -179,6 +179,27 @@ export class PaymentsApi {
       const q = /** @type {{ limit?: string }} */ (request.query);
       return { items: s.store.events(q.limit ? Number(q.limit) : 50).map(Views.event) };
     });
+
+    // ---- disputes
+    const did = (/** @type {FastifyRequest} */ r) => /** @type {{ id: string }} */ (r.params).id;
+    const disputeTarget = (/** @type {FastifyRequest} */ r) => ({ type: 'dispute', id: did(r) });
+    api.get('/disputes', { ...read, schema: { querystring: Schemas.disputesQuery } }, async (request) => {
+      const q = /** @type {Record<string, string|undefined>} */ (request.query);
+      const limit = q.limit ? Number(q.limit) : 50;
+      const [at, id] = q.cursor ? q.cursor.split('~') : [];
+      const rows = s.store.disputes({ status: q.status, open: q.open === 'true', paymentId: q.payment, before: q.cursor ? { at: Number(at), id } : undefined, limit: limit + 1 });
+      const page = rows.slice(0, limit);
+      const last = page.at(-1);
+      return { items: page.map(Views.dispute), nextCursor: rows.length > limit && last ? `${last.created_at}~${last.id}` : null };
+    });
+    api.get('/disputes/:id', { ...read, schema: { params: Schemas.disputeParams } }, async (request) => ({ dispute: Views.dispute(s.dispute(did(request))) }));
+    api.post('/disputes/:id/evidence', {
+      config: { audit: AuditClient.route('atc-payments.dispute.evidence', disputeTarget, (r, b) => ({ fields: Object.keys(/** @type {any} */ (r.body)?.evidence ?? {}), submit: /** @type {any} */ (r.body)?.submit === true, status: b?.dispute?.status })) },
+      ...write, schema: { params: Schemas.disputeParams, body: Schemas.evidence },
+    }, async (request) => ({ dispute: Views.dispute(await s.disputeEvidence(did(request), /** @type {any} */ (request.body), request.apiKey.id)) }));
+    api.post('/disputes/:id/accept', { config: { audit: AuditClient.route('atc-payments.dispute.accept', disputeTarget, (_r, b) => ({ status: b?.dispute?.status })) }, ...write, schema: { params: Schemas.disputeParams } }, async (request) => ({
+      dispute: Views.dispute(await s.acceptDispute(did(request))),
+    }));
 
     api.get('/stats', read, async () => s.stats());
   }

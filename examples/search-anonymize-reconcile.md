@@ -33,7 +33,7 @@ Every payment created in the window (at most 200, oldest first; `truncated` says
 
 ## Disputes
 
-A `charge.dispute.created` (or `.updated`, `.closed`) webhook is recorded and announced as `payment.disputed` through the outbox and audited as `atc-payments.payment.disputed`. The payment's state does not change; respond to the dispute in the Stripe dashboard before its deadline. Subscribe to `payment.disputed` (and have atc-status turn it into an alert if you want people to be told).
+A `charge.dispute.created` (or `.updated`, `.closed`) webhook is recorded and announced as `payment.disputed` through the outbox and audited as `atc-payments.payment.disputed`. The payment's state does not change. The dispute itself is kept and answered through this service; see [disputes.md](disputes.md). Subscribe to `payment.disputed` (and have atc-status turn it into an alert if you want people to be told).
 
 Pitfalls:
 - Enable the dispute events on the Stripe webhook endpoint, otherwise nothing arrives.

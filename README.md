@@ -40,7 +40,11 @@ Tests and type check: `npm test`, `npm run typecheck`. Tests use a local fake St
 | POST | `/v1/payments/:id/refunds` | write | Refund (`Idempotency-Key`) |
 | GET | `/v1/ledger` | read | Entries and balance per currency |
 | GET | `/v1/provider-events` | read | Webhook events and what they did |
-| GET | `/v1/stats` | read | By status, 24 h volume, balances, outbox |
+| GET | `/v1/disputes?status=&open=&payment=` | read | Disputes mirrored from `charge.dispute.*` webhooks, newest first |
+| GET | `/v1/disputes/:id` | read | One dispute with its evidence |
+| POST | `/v1/disputes/:id/evidence` | write | `{ evidence: { field: text }, submit? }`: save text evidence on Stripe; `submit: true` sends it to the issuer |
+| POST | `/v1/disputes/:id/accept` | write | Concede: Stripe closes the dispute as lost |
+| GET | `/v1/stats` | read | By status, 24 h volume, balances, outbox, disputes by status |
 
 Errors: `{ "error": { "code", "message" } }` — `VALIDATION_FAILED`, `INVALID_ARGUMENT`, `IDEMPOTENCY_KEY_REQUIRED`, `INVALID_SIGNATURE` (400), `PROVIDER_DECLINED` (402), `FORBIDDEN` (403), `PAYMENT_NOT_FOUND` (404), `INVALID_STATE`, `AMOUNT_EXCEEDS_REMAINING`, `IDEMPOTENCY_MISMATCH`, `IDEMPOTENCY_IN_PROGRESS` (409), `PROVIDER_REJECTED` (422), `RATE_LIMITED` (429), `PROVIDER_ERROR` (502), `PROVIDER_DISABLED`, `WEBHOOK_DISABLED` (503). Full contract: [openapi.yaml](openapi.yaml).
 
@@ -91,7 +95,7 @@ test/                         node:test suites and the fake Stripe
 ## Out of scope by design
 
 - Payment providers other than Stripe; manual capture, subscriptions, invoices, payouts and fees.
-- Disputes and chargebacks as a workflow: a `charge.dispute.*` webhook is announced as `payment.disputed`, but evidence, responses and outcomes stay in the Stripe dashboard.
+- File evidence for disputes (receipts, shipping documents): upload them in the Stripe dashboard; the API sends text evidence only. Dispute handling against the live Stripe API is covered by the fake provider and the Stripe API reference, not by a live test.
 - Customer receipts and payment-failure e-mails: Stripe sends the receipt to `customerEmail` itself; `payment.failed` events let your own systems notify the customer.
 - Reversal of a refund that Stripe reports as failed after it succeeded.
 - Multi-currency conversion; amounts are kept in the currency they were charged in.

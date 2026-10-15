@@ -31,6 +31,7 @@ tags:
   - name: refunds
   - name: ledger
   - name: webhooks
+  - name: disputes
   - name: stats
   - name: ops
 paths:
@@ -208,7 +209,7 @@ paths:
     parameters: [{ $ref: "#/components/parameters/PaymentParam" }]
     get:
       operationId: atc-payments.payments.get
-      summary: One payment with its refunds and ledger entries
+      summary: One payment with its refunds, disputes and ledger entries
       tags: [payments]
       responses:
         "200": { $ref: "#/components/responses/Detail" }
@@ -400,6 +401,100 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /v1/disputes:
+    get:
+      operationId: atc-payments.disputes.list
+      summary: Disputes (chargebacks), newest first
+      description: Mirrored from `charge.dispute.*` webhooks. `open=true` lists those that need or await a response.
+      tags: [disputes]
+      parameters:
+        - { name: status, in: query, schema: { type: string, pattern: "^[a-z_]{2,40}$" } }
+        - { name: open, in: query, schema: { type: string, enum: ["true", "false"] } }
+        - { name: payment, in: query, schema: { type: string, pattern: "^pay_[0-9a-z]{6,12}[0-9a-f]{16}$" } }
+        - { name: limit, in: query, schema: { type: string, pattern: "^([1-9]|[1-9][0-9]|100)$" } }
+        - { name: cursor, in: query, schema: { type: string, maxLength: 120 } }
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Dispute" } }
+                  nextCursor: { type: [string, "null"] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/disputes/{id}:
+    parameters: [{ $ref: "#/components/parameters/DisputeParam" }]
+    get:
+      operationId: atc-payments.disputes.get
+      summary: One dispute
+      tags: [disputes]
+      responses:
+        "200": { $ref: "#/components/responses/DisputeOne" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/disputes/{id}/evidence:
+    parameters: [{ $ref: "#/components/parameters/DisputeParam" }]
+    post:
+      operationId: atc-payments.disputes.evidence
+      summary: Save text evidence on Stripe, optionally submit it (write)
+      description: >
+        Text fields only (files are added in the Stripe dashboard). Fields are merged with what was
+        sent before. `submit: true` sends the evidence to the card issuer; Stripe then moves the
+        dispute to `under_review` and no more changes are possible. Only disputes in
+        `needs_response` or `warning_needs_response` take evidence (`409 INVALID_STATE`).
+      tags: [disputes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [evidence]
+              properties:
+                evidence:
+                  type: object
+                  minProperties: 1
+                  description: "Keys: access_activity_log, billing_address, cancellation_policy_disclosure, cancellation_rebuttal, customer_email_address, customer_name, customer_purchase_ip, duplicate_charge_explanation, duplicate_charge_id, product_description, refund_policy_disclosure, refund_refusal_explanation, service_date, shipping_address, shipping_carrier, shipping_date, shipping_tracking_number, uncategorized_text."
+                  additionalProperties: { type: string, maxLength: 20000 }
+                submit: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/DisputeOne" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { description: "`PROVIDER_REJECTED`: Stripe refused the evidence.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "502": { $ref: "#/components/responses/ProviderError" }
+        "503": { $ref: "#/components/responses/Disabled" }
+
+  /v1/disputes/{id}/accept:
+    parameters: [{ $ref: "#/components/parameters/DisputeParam" }]
+    post:
+      operationId: atc-payments.disputes.accept
+      summary: Accept (concede) a dispute (write)
+      description: Stripe closes the dispute as `lost`; the disputed amount stays with the customer. Irreversible.
+      tags: [disputes]
+      responses:
+        "200": { $ref: "#/components/responses/DisputeOne" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { description: "`PROVIDER_REJECTED`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "502": { $ref: "#/components/responses/ProviderError" }
+        "503": { $ref: "#/components/responses/Disabled" }
+
   /v1/stats:
     get:
       operationId: atc-payments.stats.get
@@ -422,6 +517,7 @@ paths:
                   balance: { type: array, items: { $ref: "#/components/schemas/Balance" } }
                   outbox: { type: object, properties: { pending: { type: integer }, dead: { type: integer } } }
                   currencies: { type: array, items: { type: string } }
+                  disputes: { type: object, additionalProperties: { type: integer }, description: Disputes by Stripe status. }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -433,15 +529,17 @@ components:
       description: "`PAYMENTS_API_KEYS=id:secret:role`; role `read` or `write`."
   parameters:
     PaymentParam: { name: id, in: path, required: true, schema: { type: string, pattern: "^pay_[0-9a-z]{6,12}[0-9a-f]{16}$" } }
+    DisputeParam: { name: id, in: path, required: true, schema: { type: string, pattern: "^(dp|du)_[A-Za-z0-9]{6,64}$" } }
     IdempotencyKey: { name: idempotency-key, in: header, required: true, schema: { type: string, pattern: "^[A-Za-z0-9._:-]{8,255}$" } }
   responses:
     BadRequest: { description: "`VALIDATION_FAILED`, `INVALID_ARGUMENT` or `IDEMPOTENCY_KEY_REQUIRED`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
     Unauthorized: { description: Missing or invalid API key., headers: { www-authenticate: { schema: { type: string, const: Bearer } } }, content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
     Forbidden: { description: "`FORBIDDEN`: role.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
-    NotFound: { description: "`PAYMENT_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    NotFound: { description: "`PAYMENT_NOT_FOUND` or `DISPUTE_NOT_FOUND`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
     Conflict: { description: "`INVALID_STATE`, `AMOUNT_EXCEEDS_REMAINING`, `IDEMPOTENCY_MISMATCH`, `IDEMPOTENCY_IN_PROGRESS`.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
     ProviderError: { description: "`PROVIDER_ERROR`: Stripe unreachable, timed out, 429 or 5xx; retry with the same Idempotency-Key.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
     Disabled: { description: "`PROVIDER_DISABLED`: STRIPE_SECRET_KEY is not set.", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    DisputeOne: { description: The dispute., content: { application/json: { schema: { type: object, required: [dispute], properties: { dispute: { $ref: "#/components/schemas/Dispute" } } } } } }
     Detail: { description: The payment., content: { application/json: { schema: { $ref: "#/components/schemas/PaymentDetail" } } } }
   schemas:
     ErrorEnvelope: { type: object, required: [error], properties: { error: { type: object, required: [code, message], properties: { code: { type: string }, message: { type: string }, details: {} } } } }
@@ -485,12 +583,28 @@ components:
         currency: { type: string }
         ref: { type: string, description: Stripe PaymentIntent or Refund id. }
         at: { type: string, format: date-time }
+    Dispute:
+      type: object
+      properties:
+        id: { type: string, description: Stripe dispute id. }
+        paymentId: { type: string }
+        amount: { type: integer }
+        currency: { type: string }
+        reason: { type: string, description: "Stripe reason: fraudulent, product_not_received, duplicate, subscription_canceled, …" }
+        status: { type: string, description: "Stripe status: warning_needs_response, needs_response, warning_under_review, under_review, won, lost, warning_closed." }
+        evidenceDueBy: { type: [string, "null"], format: date-time }
+        evidence: { type: object, additionalProperties: { type: string }, description: Text evidence sent so far. }
+        submittedAt: { type: [string, "null"], format: date-time }
+        submittedBy: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     Balance: { type: object, properties: { currency: { type: string }, charged: { type: integer }, refunded: { type: integer }, net: { type: integer }, entries: { type: integer } } }
     PaymentDetail:
       type: object
-      required: [payment, refunds, ledger, refundable]
+      required: [payment, refunds, disputes, ledger, refundable]
       properties:
         payment: { $ref: "#/components/schemas/Payment" }
         refunds: { type: array, items: { $ref: "#/components/schemas/Refund" } }
+        disputes: { type: array, items: { $ref: "#/components/schemas/Dispute" } }
         ledger: { type: array, items: { $ref: "#/components/schemas/LedgerEntry" } }
         refundable: { type: integer, description: What can still be refunded now. }

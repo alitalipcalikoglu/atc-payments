@@ -100,5 +100,24 @@ export class Database extends CoreDatabase {
     CREATE INDEX audit_outbox_pending ON audit_outbox (at) WHERE sent_at IS NULL;
     
     `,
+    `
+    -- Disputes (chargebacks) mirrored from charge.dispute.* webhooks; evidence and acceptance go to Stripe.
+    CREATE TABLE disputes (
+      id                 TEXT PRIMARY KEY,
+      payment_id         TEXT NOT NULL REFERENCES payments(id),
+      amount             INTEGER NOT NULL,
+      currency           TEXT NOT NULL,
+      reason             TEXT NOT NULL,
+      status             TEXT NOT NULL,
+      evidence_due_by    INTEGER,
+      evidence           TEXT NOT NULL DEFAULT '{}',
+      submitted_at       INTEGER,
+      submitted_by       TEXT,
+      created_at         INTEGER NOT NULL,
+      updated_at         INTEGER NOT NULL
+    );
+    CREATE INDEX disputes_status ON disputes (status, evidence_due_by);
+    CREATE INDEX disputes_payment ON disputes (payment_id);
+    `,
   ];
 }

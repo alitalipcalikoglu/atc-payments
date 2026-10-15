@@ -4,6 +4,11 @@
 
 /** SQLite statements for payments, refunds, the ledger, idempotency keys, provider events and the outbox. */
 export class PaymentStore {
+  /** Stripe dispute statuses that still need or await a response. */
+  static OPEN_DISPUTE = ['warning_needs_response', 'needs_response', 'warning_under_review', 'under_review'];
+  /** Statuses in which evidence can still be changed or the dispute accepted. */
+  static RESPONDABLE_DISPUTE = ['warning_needs_response', 'needs_response'];
+
   /** @param {import('../db.js').Database} db */
   constructor(db) {
     const raw = db.raw;
@@ -37,6 +42,13 @@ export class PaymentStore {
       eventInsert: raw.prepare('INSERT INTO provider_events (id, type, payment_id, outcome, detail, received_at) VALUES (?, ?, ?, ?, ?, ?)'),
       eventsPage: raw.prepare('SELECT * FROM provider_events ORDER BY received_at DESC, id DESC LIMIT ?'),
       eventsPrune: raw.prepare('DELETE FROM provider_events WHERE received_at < ?'),
+      dispute: raw.prepare('SELECT * FROM disputes WHERE id = ?'),
+      disputesOf: raw.prepare('SELECT * FROM disputes WHERE payment_id = ? ORDER BY created_at, id'),
+      upsertDispute: raw.prepare(`INSERT INTO disputes (id, payment_id, amount, currency, reason, status, evidence_due_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET amount = excluded.amount, reason = excluded.reason, status = excluded.status, evidence_due_by = COALESCE(excluded.evidence_due_by, disputes.evidence_due_by), updated_at = excluded.updated_at`),
+      disputeEvidence: raw.prepare('UPDATE disputes SET evidence = ?, status = ?, submitted_at = ?, submitted_by = ?, updated_at = ? WHERE id = ?'),
+      disputeStatus: raw.prepare('UPDATE disputes SET status = ?, updated_at = ? WHERE id = ?'),
+      disputeCounts: raw.prepare('SELECT status, COUNT(*) AS n FROM disputes GROUP BY status'),
       outboxInsert: raw.prepare('INSERT INTO outbox (type, data, created_at, next_at) VALUES (?, ?, ?, ?)'),
       outboxDue: raw.prepare('SELECT * FROM outbox WHERE sent_at IS NULL AND next_at <= ? AND attempts < ? ORDER BY seq LIMIT ?'),
       outboxSent: raw.prepare('UPDATE outbox SET sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE seq = ?'),
@@ -83,6 +95,33 @@ export class PaymentStore {
   setStatus(id, status, providerStatus, error, now) { this.stmt.setStatus.run(status, providerStatus, error, now, id); }
   /** @param {string} id @param {string} status @param {number} refunded @param {number} now */
   setRefunded(id, status, refunded, now) { this.stmt.setRefunded.run(status, refunded, now, id); }
+
+  /** @param {string} id @returns {import('../types.js').DisputeRow|undefined} */
+  dispute(id) { return /** @type {any} */ (this.stmt.dispute.get(id)); }
+  /** @param {string} paymentId @returns {import('../types.js').DisputeRow[]} */
+  disputesOf(paymentId) { return /** @type {any} */ (this.stmt.disputesOf.all(paymentId)); }
+  /** @param {{ id: string, paymentId: string, amount: number, currency: string, reason: string, status: string, dueBy: number|null }} d @param {number} now */
+  upsertDispute(d, now) { this.stmt.upsertDispute.run(d.id, d.paymentId, d.amount, d.currency, d.reason, d.status, d.dueBy, now, now); }
+  /** @param {string} id @param {string} evidence @param {string} status @param {number|null} submittedAt @param {string|null} by @param {number} now */
+  disputeEvidence(id, evidence, status, submittedAt, by, now) { this.stmt.disputeEvidence.run(evidence, status, submittedAt, by, now, id); }
+  /** @param {string} id @param {string} status @param {number} now */
+  disputeStatus(id, status, now) { this.stmt.disputeStatus.run(status, now, id); }
+  /** @returns {Record<string, number>} */
+  disputeCounts() { return Object.fromEntries(this.stmt.disputeCounts.all().map((r) => [String(r.status), Number(r.n)])); }
+  /**
+   * @param {{ status?: string, open?: boolean, paymentId?: string, before?: { at: number, id: string }, limit: number }} q
+   * @returns {import('../types.js').DisputeRow[]}
+   */
+  disputes(q) {
+    const where = [];
+    /** @type {(string|number)[]} */ const args = [];
+    if (q.status) { where.push('status = ?'); args.push(q.status); }
+    if (q.open) where.push(`status IN (${PaymentStore.OPEN_DISPUTE.map(() => '?').join(', ')})`), args.push(...PaymentStore.OPEN_DISPUTE);
+    if (q.paymentId) { where.push('payment_id = ?'); args.push(q.paymentId); }
+    if (q.before) { where.push('(created_at < ? OR (created_at = ? AND id < ?))'); args.push(q.before.at, q.before.at, q.before.id); }
+    args.push(q.limit);
+    return /** @type {any} */ (this.raw.prepare(`SELECT * FROM disputes ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args));
+  }
 
   /** @param {string} id @returns {RefundRow|undefined} */
   refund(id) { return /** @type {any} */ (this.stmt.refund.get(id)); }

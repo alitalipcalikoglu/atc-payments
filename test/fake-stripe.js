@@ -17,6 +17,7 @@ export class FakeStripe {
   constructor() {
     /** @type {Map<string, any>} */ this.intents = new Map();
     /** @type {Map<string, any>} */ this.refunds = new Map();
+    /** @type {Map<string, any>} */ this.disputes = new Map();
     /** @type {Map<string, { status: number, body: any }>} */ this.idempotency = new Map();
     /** @type {{ method: string, path: string, idempotencyKey: string|null, params: Record<string, string> }[]} */ this.requests = [];
     /** Answer the next N requests with this status (transient-failure tests). */
@@ -50,6 +51,19 @@ export class FakeStripe {
     re.status = status;
     if (status === 'failed') re.failure_reason = 'expired_or_canceled_card';
     return this.event(status === 'failed' ? 'refund.failed' : 'refund.updated', re);
+  }
+
+  /**
+   * Open a dispute on a succeeded intent and return the signed `charge.dispute.created` event.
+   * @param {string} intentId @param {{ reason?: string, status?: string, amount?: number }} [o]
+   */
+  openDispute(intentId, o = {}) {
+    const pi = this.intents.get(intentId);
+    const id = `dp_${randomBytes(12).toString('hex')}`;
+    const dp = { id, object: 'dispute', amount: o.amount ?? pi.amount, currency: pi.currency, payment_intent: pi.id, charge: `ch_${pi.id.slice(3)}`, reason: o.reason ?? 'product_not_received', status: o.status ?? 'needs_response',
+      evidence: {}, evidence_details: { due_by: Math.floor(Date.now() / 1000) + 7 * 86_400, submission_count: 0 } };
+    this.disputes.set(id, dp);
+    return this.event('charge.dispute.created', dp);
   }
 
   /** A signed event delivery. @param {string} type @param {any} object @param {{ secret?: string, t?: number }} [o] */
@@ -110,6 +124,16 @@ export class FakeStripe {
           pi.status = 'canceled';
           return remember(200, pi);
         }
+      }
+      const dispute = /^\/v1\/disputes\/([^/]+)(\/close)?$/.exec(path);
+      if (dispute && req.method === 'POST') {
+        const dp = this.disputes.get(decodeURIComponent(dispute[1]));
+        if (!dp) return fail(404, 'invalid_request_error', `No such dispute: '${dispute[1]}'`, 'resource_missing');
+        if (!['needs_response', 'warning_needs_response'].includes(dp.status)) return fail(400, 'invalid_request_error', `This dispute is already ${dp.status}.`, 'dispute_already_closed');
+        if (dispute[2]) { dp.status = 'lost'; return send(200, dp); }
+        for (const [k, v] of Object.entries(params)) { const m = /^evidence\[([a-z_]+)\]$/.exec(k); if (m) dp.evidence[m[1]] = v; }
+        if (params.submit === 'true') { dp.status = 'under_review'; dp.evidence_details.submission_count++; }
+        return send(200, dp);
       }
       if (req.method === 'GET' && path === '/v1/refunds') {
         const q = new URL(String(req.url), 'http://x').searchParams;
