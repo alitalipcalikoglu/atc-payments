@@ -1,6 +1,6 @@
 {
   "name": "@atc-web/atc-payments",
-  "version": "1.31.0",
+  "version": "1.32.0",
   "private": true,
   "description": "Payment intents and refunds through the Stripe REST API: idempotency keys, signed webhooks, a payment state machine, a ledger, and events to audit and webhook-out",
   "license": "MIT",
@@ -20,7 +20,7 @@
     "typecheck": "tsc -p jsconfig.json"
   },
   "dependencies": {
-    "@atc-web/atc-service-core": "github:alitalipcalikoglu/atc-service-core#v1.31.0",
+    "@atc-web/atc-service-core": "github:alitalipcalikoglu/atc-service-core#v1.32.0",
     "@fastify/rate-limit": "11.2.0",
     "fastify": "5.12.5"
   },
