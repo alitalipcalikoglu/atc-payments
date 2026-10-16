@@ -22,7 +22,7 @@ test('API: probes report the provider; disabled provider answers 503', async (t)
 });
 
 test('API: create with Idempotency-Key, replay, list, detail, webhook, refund, ledger, events, stats, metrics', async (t) => {
-  const { app } = await buildApp(fake);
+  const { app, store } = await buildApp(fake);
   t.after(() => app.close());
   const body = { amount: 2500, currency: 'usd', customerEmail: 'ada@example.com', metadata: { order: 'A-1' } };
   assert.equal((await app.inject({ url: '/v1/payments' })).statusCode, 401);
@@ -35,7 +35,8 @@ test('API: create with Idempotency-Key, replay, list, detail, webhook, refund, l
   assert.deepEqual([payment.status, payment.customerEmail, payment.metadata, payment.provider.name, res.headers['idempotent-replayed']], ['pending', 'ada@example.com', { order: 'A-1' }, 'stripe', 'false']);
   assert.match(clientSecret, /_secret_/);
   const replay = await app.inject({ method: 'POST', url: '/v1/payments', headers: headers(WRITE_KEY, 'order-A-1-create'), payload: body });
-  assert.deepEqual([replay.statusCode, JSON.parse(replay.body).payment.id, replay.headers['idempotent-replayed']], [201, payment.id, 'true']);
+  assert.deepEqual([replay.statusCode, JSON.parse(replay.body).payment.id, replay.headers['idempotent-replayed'], JSON.parse(replay.body).clientSecret], [201, payment.id, 'true', clientSecret], 'the replay carries the client secret again');
+  assert.equal(/** @type {any} */ (store.raw.prepare("SELECT COUNT(*) AS n FROM idempotency WHERE response LIKE '%_secret_%'").get()).n, 0, 'the replay store never holds a client secret');
   assert.equal(JSON.parse((await app.inject({ method: 'POST', url: '/v1/payments', headers: headers(WRITE_KEY, 'order-A-1-create'), payload: { ...body, amount: 1 } })).body).error.code, 'IDEMPOTENCY_MISMATCH');
   const other = await app.inject({ method: 'POST', url: '/v1/payments', headers: { ...headers(WRITE_KEY, 'order-A-1-create'), 'x-access-token': 'someone-else' }, payload: body });
   assert.deepEqual([other.statusCode, JSON.parse(other.body).error.code, other.body.includes(clientSecret)], [409, 'IDEMPOTENCY_MISMATCH', false], 'another caller behind the same key never gets the stored client secret');

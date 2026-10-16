@@ -51,7 +51,7 @@ Errors: `{ "error": { "code", "message" } }` — `VALIDATION_FAILED`, `INVALID_A
 ## Conventions
 
 - Lists answer `{ items, nextCursor }`; pass `nextCursor` back as `cursor`. Payments, ledger, disputes and provider events page newest first. Payments have `pay_<time><random>` ids (the platform's one id format).
-- Payment creation and refunds keep this service's own `Idempotency-Key` handling: the key is required, kept for `IDEMPOTENCY_TTL_HOURS` (default 24) and scoped to the API key and the caller behind it (the console's `X-Actor`, an end-user `X-Access-Token`); a repeat replays the first answer, while another body or another caller is `409 IDEMPOTENCY_MISMATCH`, so a stored client secret is never handed to someone else.
+- Payment creation and refunds keep this service's own `Idempotency-Key` handling: the key is required, kept for `IDEMPOTENCY_TTL_HOURS` (default 24) and scoped to the API key and the caller behind it (the console's `X-Actor`, an end-user `X-Access-Token`); a repeat replays the first answer (the client secret is fetched from Stripe again rather than stored), while another body or another caller is `409 IDEMPOTENCY_MISMATCH`.
 
 ## Examples
 
@@ -76,7 +76,7 @@ Taking a payment end to end, idempotency, webhooks and the gateway route, refund
 
 ## Security notes
 
-- Card data goes from the browser to Stripe; this service sees amounts and ids only. Client secrets are returned by the create call and never stored outside the 24 h idempotency record.
+- Card data goes from the browser to Stripe; this service sees amounts and ids only. Client secrets are returned by the create call and never stored, not even in the idempotency record: a replayed create fetches the secret from Stripe again.
 - Webhooks are authenticated by the Stripe signature only: HMAC-SHA256 over the raw body, constant-time comparison, timestamp tolerance, each event id once. Rejections are audited.
 - The state machine refuses backward moves, so forged-looking or out-of-order events cannot un-pay or un-refund a payment; the ledger is append-only at the database level.
 - Prefer a Stripe restricted key with only PaymentIntents and Refunds write access.

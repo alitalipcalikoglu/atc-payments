@@ -40,7 +40,8 @@ returns the same object. Outbox events retry with exponential backoff (1 s doubl
 10 min) up to `OUTBOX_MAX_ATTEMPTS`.
 
 ## Idempotency
-Creates and refunds require `Idempotency-Key`; deterministic outcomes are stored and replayed,
+Creates and refunds require `Idempotency-Key`; deterministic outcomes are stored (without the client
+secret, which a replay fetches from Stripe again) and replayed,
 another body with the same key, or the same key from another caller behind the API key (`X-Actor`,
 `X-Access-Token`), answers 409. Webhook events by id; ledger entries by provider id;
 outbox events carry `atc-payments:<seq>` to atc-webhook-out.

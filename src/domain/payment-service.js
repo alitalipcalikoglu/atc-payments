@@ -58,7 +58,7 @@ export class PaymentService {
    * Run `fn` once per (API key, idempotency key). Deterministic outcomes (success, or a 4xx
    * refusal) are stored and replayed; transient failures release the key so the client can retry.
    * @param {string} keyId @param {string|undefined} idemKey @param {string} scope @param {unknown} body
-   * @param {(providerKey: string) => Promise<{ status: number, body: unknown }>} fn
+   * @param {(providerKey: string) => Promise<{ status: number, body: unknown, stored?: unknown }>} fn  `stored` is what the replay store keeps when the live answer carries a secret.
    * @returns {Promise<IdempotentResult>}
    */
   async idempotent(keyId, idemKey, scope, body, fn) {
@@ -73,8 +73,8 @@ export class PaymentService {
     }
     this.store.idemStart(keyId, idemKey, scope, hash, this.now());
     try {
-      const out = await fn(`atc-payments:${keyId}:${idemKey}`);
-      this.store.idemDone(keyId, idemKey, out.status, out.body);
+      const { stored, ...out } = await fn(`atc-payments:${keyId}:${idemKey}`);
+      this.store.idemDone(keyId, idemKey, out.status, stored === undefined ? out.body : stored);
       return { ...out, replayed: false };
     } catch (err) {
       if (err instanceof PaymentError && err.statusCode < 500) this.store.idemDone(keyId, idemKey, err.statusCode, { error: { code: err.code, message: err.message } });
@@ -122,6 +122,13 @@ export class PaymentService {
     const stripe = this.#provider();
     const intent = await this.#call(() => stripe.cancelPaymentIntent(p.provider_id, `atc-payments:cancel:${p.id}`));
     return this.#applyIntent(p, intent, null).payment;
+  }
+
+  /** The Stripe client secret of a payment, fetched fresh (it is never stored). @param {string} id */
+  async clientSecret(id) {
+    const p = this.get(id);
+    const intent = await this.#call(() => this.#provider().retrievePaymentIntent(p.provider_id));
+    return String(intent.client_secret ?? '');
   }
 
   /** Read the intent from the provider and apply its status (when webhooks were missed). @param {string} id */

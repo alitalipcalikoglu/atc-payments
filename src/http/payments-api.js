@@ -121,10 +121,13 @@ export class PaymentsApi {
 
     api.post('/payments', { config: { audit: AuditClient.route('atc-payments.payment.create', (_r, b) => (b?.payment?.id ? { type: 'payment', id: b.payment.id } : null), (_r, b) => (b?.payment ? { amount: b.payment.amount, currency: b.payment.currency } : undefined)) }, ...write, schema: { body: Schemas.create } }, async (request, reply) => {
       const body = /** @type {any} */ (request.body);
+      // The client secret is never written to the replay store: a replay fetches it from Stripe again.
       const out = await s.idempotent(request.apiKey.id, idem(request), scoped(request, 'create'), body, async (providerKey) => {
         const r = await s.create(body, request.apiKey.id, providerKey);
-        return { status: 201, body: { payment: Views.payment(r.payment), clientSecret: r.clientSecret } };
+        const payment = Views.payment(r.payment);
+        return { status: 201, body: { payment, clientSecret: r.clientSecret }, stored: { payment } };
       });
+      if (out.replayed && out.status === 201) out.body = { .../** @type {object} */ (out.body), clientSecret: await s.clientSecret(/** @type {any} */ (out.body).payment.id) };
       return send(reply, out);
     });
 
