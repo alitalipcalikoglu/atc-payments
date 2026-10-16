@@ -39,7 +39,7 @@ Tests and type check: `npm test`, `npm run typecheck`. Tests use a local fake St
 | POST | `/v1/reconciliation` | write | Compare a creation window with Stripe; `repair` syncs the differences |
 | POST | `/v1/payments/:id/refunds` | write | Refund (`Idempotency-Key`) |
 | GET | `/v1/ledger` | read | Entries and balance per currency |
-| GET | `/v1/provider-events` | read | Webhook events and what they did |
+| GET | `/v1/provider-events` | read | Webhook events and what they did (`limit`, `cursor`) |
 | GET | `/v1/disputes?status=&open=&payment=` | read | Disputes mirrored from `charge.dispute.*` webhooks, newest first |
 | GET | `/v1/disputes/:id` | read | One dispute with its evidence |
 | POST | `/v1/disputes/:id/evidence` | write | `{ evidence: { field: text }, submit? }`: save text evidence on Stripe; `submit: true` sends it to the issuer |
@@ -47,6 +47,11 @@ Tests and type check: `npm test`, `npm run typecheck`. Tests use a local fake St
 | GET | `/v1/stats` | read | By status, 24 h volume, balances, outbox, disputes by status |
 
 Errors: `{ "error": { "code", "message" } }` — `VALIDATION_FAILED`, `INVALID_ARGUMENT`, `IDEMPOTENCY_KEY_REQUIRED`, `INVALID_SIGNATURE` (400), `PROVIDER_DECLINED` (402), `FORBIDDEN` (403), `PAYMENT_NOT_FOUND` (404), `INVALID_STATE`, `AMOUNT_EXCEEDS_REMAINING`, `IDEMPOTENCY_MISMATCH`, `IDEMPOTENCY_IN_PROGRESS` (409), `PROVIDER_REJECTED` (422), `RATE_LIMITED` (429), `PROVIDER_ERROR` (502), `PROVIDER_DISABLED`, `WEBHOOK_DISABLED` (503). Full contract: [openapi.yaml](openapi.yaml).
+
+## Conventions
+
+- Lists answer `{ items, nextCursor }`; pass `nextCursor` back as `cursor`. Payments, ledger, disputes and provider events page newest first. Payments have `pay_<time><random>` ids (the platform's one id format).
+- Payment creation and refunds keep this service's own `Idempotency-Key` handling: the key is required, kept for `IDEMPOTENCY_TTL_HOURS` (default 24) and scoped to the API key and the caller behind it (the console's `X-Actor`, an end-user `X-Access-Token`); a repeat replays the first answer, while another body or another caller is `409 IDEMPOTENCY_MISMATCH`, so a stored client secret is never handed to someone else.
 
 ## Examples
 

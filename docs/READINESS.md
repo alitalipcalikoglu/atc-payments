@@ -41,7 +41,8 @@ returns the same object. Outbox events retry with exponential backoff (1 s doubl
 
 ## Idempotency
 Creates and refunds require `Idempotency-Key`; deterministic outcomes are stored and replayed,
-another body with the same key answers 409. Webhook events by id; ledger entries by provider id;
+another body with the same key, or the same key from another caller behind the API key (`X-Actor`,
+`X-Access-Token`), answers 409. Webhook events by id; ledger entries by provider id;
 outbox events carry `atc-payments:<seq>` to atc-webhook-out.
 
 ## Backup / restore

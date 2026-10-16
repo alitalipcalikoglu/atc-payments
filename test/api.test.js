@@ -37,6 +37,8 @@ test('API: create with Idempotency-Key, replay, list, detail, webhook, refund, l
   const replay = await app.inject({ method: 'POST', url: '/v1/payments', headers: headers(WRITE_KEY, 'order-A-1-create'), payload: body });
   assert.deepEqual([replay.statusCode, JSON.parse(replay.body).payment.id, replay.headers['idempotent-replayed']], [201, payment.id, 'true']);
   assert.equal(JSON.parse((await app.inject({ method: 'POST', url: '/v1/payments', headers: headers(WRITE_KEY, 'order-A-1-create'), payload: { ...body, amount: 1 } })).body).error.code, 'IDEMPOTENCY_MISMATCH');
+  const other = await app.inject({ method: 'POST', url: '/v1/payments', headers: { ...headers(WRITE_KEY, 'order-A-1-create'), 'x-access-token': 'someone-else' }, payload: body });
+  assert.deepEqual([other.statusCode, JSON.parse(other.body).error.code, other.body.includes(clientSecret)], [409, 'IDEMPOTENCY_MISMATCH', false], 'another caller behind the same key never gets the stored client secret');
   assert.equal((await app.inject({ method: 'POST', url: '/v1/payments', headers: headers(WRITE_KEY, 'bad-body-key'), payload: { amount: 1.5, currency: 'usd' } })).statusCode, 400);
 
   const detail = JSON.parse((await app.inject({ url: `/v1/payments/${payment.id}`, headers: headers(READ_KEY) })).body);
@@ -60,7 +62,11 @@ test('API: create with Idempotency-Key, replay, list, detail, webhook, refund, l
   assert.deepEqual([ledger.items[0].amount, ledger.balance[0].net, typeof ledger.nextCursor], [-500, 2000, 'string']);
   const list = JSON.parse((await app.inject({ url: '/v1/payments?status=partially_refunded', headers: headers(READ_KEY) })).body);
   assert.deepEqual(list.items.map((/** @type {any} */ p) => p.id), [payment.id]);
-  assert.equal(JSON.parse((await app.inject({ url: '/v1/provider-events', headers: headers(READ_KEY) })).body).items[0].outcome, 'applied');
+  const events = JSON.parse((await app.inject({ url: '/v1/provider-events', headers: headers(READ_KEY) })).body);
+  assert.equal(events.items[0].outcome, 'applied');
+  assert.equal(events.nextCursor, null, 'one event, one page');
+  const older = JSON.parse((await app.inject({ url: `/v1/provider-events?cursor=${encodeURIComponent(`${Date.parse(events.items[0].receivedAt)}~${events.items[0].id}`)}`, headers: headers(READ_KEY) })).body);
+  assert.deepEqual([older.items, older.nextCursor], [[], null], 'the cursor excludes the row it names');
   const stats = JSON.parse((await app.inject({ url: '/v1/stats', headers: headers(READ_KEY) })).body);
   assert.deepEqual([stats.provider, stats.byStatus.partially_refunded, stats.volume24h[0].amount, stats.outbox.pending], ['stripe', 1, 2500, 0], 'without atc-webhook-out nothing is queued');
   assert.match((await app.inject({ url: '/metrics', headers: headers(READ_KEY) })).body, /payments_ledger_net\{currency="usd"\} 2000/);

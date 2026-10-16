@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
 import { AuditClient } from '@atc-web/atc-service-core/audit';
+import { Idempotency } from '@atc-web/atc-service-core/idempotency';
 import { createErrorHandler, registerInfo, registerOpenApi, registerProbes, registerRequestContext, requestOptions } from '@atc-web/atc-service-core/fastify';
 import { PaymentError } from '../domain/errors.js';
 import { ApiKeyAuth } from './api-key-auth.js';
@@ -110,9 +112,16 @@ export class PaymentsApi {
       return { payment: Views.payment(p), refunds: s.store.refundsOf(p.id).map(Views.refund), disputes: s.store.disputesOf(p.id).map(Views.dispute), ledger: s.store.ledgerOf(p.id).map(Views.ledger), refundable: ['succeeded', 'partially_refunded'].includes(p.status) ? p.amount - p.amount_refunded - s.store.pendingRefunded(p.id) : 0 };
     };
 
+    // The stored answer belongs to the caller behind the key too (console X-Actor, end-user token), so another
+    // person reusing the key gets 409 instead of the first answer (which carries a client secret on create).
+    const scoped = (/** @type {FastifyRequest} */ r, /** @type {string} */ base) => {
+      const who = Idempotency.defaultSubject(r);
+      return who === '|' ? base : `${base}|${createHash('sha256').update(who).digest('hex').slice(0, 32)}`;
+    };
+
     api.post('/payments', { config: { audit: AuditClient.route('atc-payments.payment.create', (_r, b) => (b?.payment?.id ? { type: 'payment', id: b.payment.id } : null), (_r, b) => (b?.payment ? { amount: b.payment.amount, currency: b.payment.currency } : undefined)) }, ...write, schema: { body: Schemas.create } }, async (request, reply) => {
       const body = /** @type {any} */ (request.body);
-      const out = await s.idempotent(request.apiKey.id, idem(request), 'create', body, async (providerKey) => {
+      const out = await s.idempotent(request.apiKey.id, idem(request), scoped(request, 'create'), body, async (providerKey) => {
         const r = await s.create(body, request.apiKey.id, providerKey);
         return { status: 201, body: { payment: Views.payment(r.payment), clientSecret: r.clientSecret } };
       });
@@ -160,7 +169,7 @@ export class PaymentsApi {
     api.post('/payments/:id/refunds', { config: { audit: AuditClient.route('atc-payments.refund.create', (_r, b) => (b?.refund?.id ? { type: 'refund', id: b.refund.id } : null), (r, b) => ({ payment: pid(r), amount: b?.refund?.amount, status: b?.refund?.status })) }, ...write, schema: { params: Schemas.paymentParams, body: Schemas.refund } }, async (request, reply) => {
       const body = /** @type {any} */ (request.body ?? {});
       const id = pid(request);
-      const out = await s.idempotent(request.apiKey.id, idem(request), `refund:${id}`, body, async (providerKey) => {
+      const out = await s.idempotent(request.apiKey.id, idem(request), scoped(request, `refund:${id}`), body, async (providerKey) => {
         const r = await s.refund(id, body, request.apiKey.id, providerKey);
         return { status: 201, body: { refund: Views.refund(r.refund), payment: Views.payment(r.payment) } };
       });
@@ -176,8 +185,13 @@ export class PaymentsApi {
     });
 
     api.get('/provider-events', { ...read, schema: { querystring: Schemas.eventsQuery } }, async (request) => {
-      const q = /** @type {{ limit?: string }} */ (request.query);
-      return { items: s.store.events(q.limit ? Number(q.limit) : 50).map(Views.event) };
+      const q = /** @type {{ limit?: string, cursor?: string }} */ (request.query);
+      const limit = q.limit ? Number(q.limit) : 50;
+      const at = q.cursor ? q.cursor.indexOf('~') : -1;
+      const rows = /** @type {any[]} */ (s.store.events(limit + 1, q.cursor ? [Number(q.cursor.slice(0, at)), q.cursor.slice(at + 1)] : undefined));
+      const page = rows.slice(0, limit);
+      const last = page[page.length - 1];
+      return { items: page.map(Views.event), nextCursor: rows.length > limit ? `${last.received_at}~${last.id}` : null };
     });
 
     // ---- disputes

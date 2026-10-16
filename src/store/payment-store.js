@@ -40,7 +40,7 @@ export class PaymentStore {
       idemStale: raw.prepare("DELETE FROM idempotency WHERE state = 'in_progress'"),
       eventSeen: raw.prepare('SELECT 1 AS x FROM provider_events WHERE id = ?'),
       eventInsert: raw.prepare('INSERT INTO provider_events (id, type, payment_id, outcome, detail, received_at) VALUES (?, ?, ?, ?, ?, ?)'),
-      eventsPage: raw.prepare('SELECT * FROM provider_events ORDER BY received_at DESC, id DESC LIMIT ?'),
+      eventsPage: raw.prepare('SELECT * FROM provider_events WHERE (received_at, id) < (?, ?) ORDER BY received_at DESC, id DESC LIMIT ?'),
       eventsPrune: raw.prepare('DELETE FROM provider_events WHERE received_at < ?'),
       dispute: raw.prepare('SELECT * FROM disputes WHERE id = ?'),
       disputesOf: raw.prepare('SELECT * FROM disputes WHERE payment_id = ? ORDER BY created_at, id'),
@@ -162,7 +162,8 @@ export class PaymentStore {
   /** @param {string} id @param {string} type @param {string|null} paymentId @param {'applied'|'ignored'|'unknown'} outcome @param {string|null} detail @param {number} now */
   eventInsert(id, type, paymentId, outcome, detail, now) { this.stmt.eventInsert.run(id, type, paymentId, outcome, detail, now); }
   /** @param {number} limit */
-  events(limit) { return this.stmt.eventsPage.all(limit); }
+  /** Newest first; `before` is the (received_at, id) of the previous page's last row. @param {number} limit @param {[number, string]} [before] */
+  events(limit, before = [Number.MAX_SAFE_INTEGER, '']) { return this.stmt.eventsPage.all(before[0], before[1], limit); }
   /** @param {number} cutoff */
   eventsPrune(cutoff) { return Number(this.stmt.eventsPrune.run(cutoff).changes); }
 

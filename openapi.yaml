@@ -377,6 +377,7 @@ paths:
       tags: [webhooks]
       parameters:
         - { name: limit, in: query, schema: { type: string, pattern: "^([1-9]|[1-9][0-9]|100)$" } }
+        - { name: cursor, in: query, description: Opaque `nextCursor` from the previous page., schema: { type: string, maxLength: 272 } }
       responses:
         "200":
           description: Newest first.
@@ -384,8 +385,9 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items]
+                required: [items, nextCursor]
                 properties:
+                  nextCursor: { type: [string, "null"], description: Pass as `cursor` for older events; null on the last page. }
                   items:
                     type: array
                     items:
