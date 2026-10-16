@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { Ids } from '@atc-web/atc-service-core/ids';
 
 /** @typedef {{ enabled: boolean, record: (e: import('@atc-web/atc-service-core/audit').AuditEvent) => boolean }} AuditSink What the route hook and the service need. */
 
@@ -41,7 +41,7 @@ export class DurableAudit {
   /** @param {import('@atc-web/atc-service-core/audit').AuditEvent} e */
   record(e) {
     if (!this.client.enabled) return false;
-    this.store.auditInsert(randomUUID(), this.now(), JSON.stringify(e));
+    this.store.auditInsert(Ids.create('aud', this.now()), this.now(), JSON.stringify(e));
     return true;
   }
 

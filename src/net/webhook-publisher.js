@@ -16,8 +16,8 @@ export class WebhookPublisher {
   async publish(e) {
     const res = await this.fetch(`${this.target.url}/v1/events`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${this.target.apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ type: e.type, data: JSON.parse(e.data), idempotencyKey: `atc-payments:${e.seq}` }),
+      headers: { authorization: `Bearer ${this.target.apiKey}`, 'content-type': 'application/json', 'idempotency-key': `atc-payments:${e.seq}` },
+      body: JSON.stringify({ type: e.type, data: JSON.parse(e.data) }),
       redirect: 'error',
       signal: AbortSignal.timeout(this.target.timeoutMs),
     });
